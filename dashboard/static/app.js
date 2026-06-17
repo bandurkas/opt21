@@ -46,6 +46,7 @@ async function updateDashboard() {
                 tr.innerHTML = `
                     <td>#${trade.trade_id}</td>
                     <td>${trade.time_str}</td>
+                    <td>${trade.duration_str}</td>
                     <td>${trade.pair}</td>
                     <td>${trade.trade_size} ETH</td>
                     <td>${formatCurrency(entryGap)}</td>
@@ -68,6 +69,7 @@ async function updateDashboard() {
                 tr.innerHTML = `
                     <td>#${trade.trade_id}</td>
                     <td>${trade.time_str}</td>
+                    <td>${trade.duration_str}</td>
                     <td>${trade.pair}</td>
                     <td>${trade.trade_size} ETH</td>
                     <td class="${getPnLClass(pnl)}">${formatPnL(pnl)}</td>

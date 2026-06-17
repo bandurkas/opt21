@@ -64,6 +64,17 @@ async def get_data():
             # Format time
             dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00'))
             trade['time_str'] = dt.strftime('%H:%M:%S')
+            
+            # Calculate duration
+            now = datetime.utcnow()
+            dt_utc = dt.replace(tzinfo=None)
+            diff = now - dt_utc
+            mins, secs = divmod(diff.total_seconds(), 60)
+            hours, mins = divmod(mins, 60)
+            if hours > 0:
+                trade['duration_str'] = f"{int(hours)}h {int(mins)}m"
+            else:
+                trade['duration_str'] = f"{int(mins)}m {int(secs)}s"
 
     # 3. Get Closed Trades
     closed_trades_raw = conn.execute("SELECT * FROM open_trades WHERE status = 'CLOSED' ORDER BY timestamp DESC LIMIT 20").fetchall()
@@ -72,9 +83,19 @@ async def get_data():
         trade = dict(r)
         dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00'))
         trade['time_str'] = dt.strftime('%H:%M:%S')
-        # Closed trades actual PnL is not explicitly stored in open_trades, but we can reconstruct roughly or we can just say "Closed"
-        # We should probably store actual_pnl in open_trades when closing!
-        # For now, just show it.
+        
+        if trade.get('close_time'):
+            close_dt = datetime.fromisoformat(trade['close_time'].replace('Z', '+00:00'))
+            diff = close_dt - dt
+            mins, secs = divmod(diff.total_seconds(), 60)
+            hours, mins = divmod(mins, 60)
+            if hours > 0:
+                trade['duration_str'] = f"{int(hours)}h {int(mins)}m"
+            else:
+                trade['duration_str'] = f"{int(mins)}m {int(secs)}s"
+        else:
+            trade['duration_str'] = "-"
+            
         closed_trades.append(trade)
         
     conn.close()

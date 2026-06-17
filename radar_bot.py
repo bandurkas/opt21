@@ -39,7 +39,8 @@ def init_db():
         trade_size REAL,
         status TEXT,
         actual_pnl REAL DEFAULT 0.0,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        close_time DATETIME
     )
     ''')
     conn.execute('''
@@ -220,7 +221,7 @@ def check_unwind_signals():
                     'tight_exchange': trade['tight_exchange'],
                     'actual_pnl': actual_pnl
                 })
-                conn.execute(f"UPDATE open_trades SET status = 'CLOSED', actual_pnl = {actual_pnl} WHERE trade_id = {trade_id}")
+                conn.execute(f"UPDATE open_trades SET status = 'CLOSED', actual_pnl = {actual_pnl}, close_time = CURRENT_TIMESTAMP WHERE trade_id = {trade_id}")
                 
                 # Split profit evenly between the two exchanges
                 half_pnl = actual_pnl / 2.0

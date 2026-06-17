@@ -23,6 +23,28 @@ def save_admins():
     with open(ADMINS_FILE, "w") as f:
         json.dump(list(authorized_admins), f)
 
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''
+    CREATE TABLE IF NOT EXISTS open_trades (
+        trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        expiry TEXT,
+        strike REAL,
+        opt_type TEXT,
+        wide_exchange TEXT,
+        tight_exchange TEXT,
+        entry_aevo_mid REAL,
+        entry_deri_mid REAL,
+        trade_size REAL,
+        status TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
@@ -94,6 +116,7 @@ def get_h7_opportunities():
                             'type': 'MAKER_ARB',
                             'wide_exchange': 'Derive (Lyra)',
                             'tight_exchange': 'Aevo',
+                            'expiry_iso': expiry,
                             'pretty_expiry': pretty_expiry,
                             'raw_expiry': raw_expiry,
                             'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
@@ -101,7 +124,9 @@ def get_h7_opportunities():
                             'opt_type': opt_type,
                             'edge': edge,
                             'action': f"Выставить BUY Limit внутри спреда на Derive (~${aevo_mid-1})",
-                            'fair_price': aevo_mid
+                            'fair_price': aevo_mid,
+                            'entry_aevo_mid': aevo_mid,
+                            'entry_deri_mid': deri_mid
                         })
             
             # Check Aevo Wide / Derive Tight
@@ -113,6 +138,7 @@ def get_h7_opportunities():
                             'type': 'MAKER_ARB',
                             'wide_exchange': 'Aevo',
                             'tight_exchange': 'Derive (Lyra)',
+                            'expiry_iso': expiry,
                             'pretty_expiry': pretty_expiry,
                             'raw_expiry': raw_expiry,
                             'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
@@ -120,12 +146,72 @@ def get_h7_opportunities():
                             'opt_type': opt_type,
                             'edge': edge,
                             'action': f"Выставить BUY Limit внутри спреда на Aevo (~${deri_mid-1})",
-                            'fair_price': deri_mid
+                            'fair_price': deri_mid,
+                            'entry_aevo_mid': aevo_mid,
+                            'entry_deri_mid': deri_mid
                         })
                         
         return opportunities
     except Exception as e:
         print(f"Error checking H7: {e}")
+        return []
+
+def check_unwind_signals():
+    unwinds = []
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        open_trades = pd.read_sql_query("SELECT * FROM open_trades WHERE status = 'OPEN'", conn)
+        
+        if open_trades.empty:
+            conn.close()
+            return []
+            
+        latest_time_query = "SELECT MAX(timestamp) FROM options_data"
+        latest_time = pd.read_sql_query(latest_time_query, conn).iloc[0,0]
+        
+        query = f"""
+        SELECT exchange, expiry, strike, option_type, ask_1, bid_1
+        FROM options_data
+        WHERE timestamp = '{latest_time}'
+        """
+        latest_df = pd.read_sql_query(query, conn)
+        
+        latest_df['mid'] = (latest_df['ask_1'] + latest_df['bid_1']) / 2
+        
+        merged = latest_df.pivot_table(
+            index=['expiry', 'option_type', 'strike'],
+            columns='exchange',
+            values='mid'
+        ).reset_index()
+        
+        for _, trade in open_trades.iterrows():
+            trade_id = trade['trade_id']
+            mask = (merged['expiry'] == trade['expiry']) & (merged['option_type'] == trade['opt_type']) & (merged['strike'] == trade['strike'])
+            if not mask.any(): continue
+            
+            row = merged[mask].iloc[0]
+            if pd.isna(row.get('AEVO')) or pd.isna(row.get('DERIVE')): continue
+            
+            aevo_mid = row['AEVO']
+            deri_mid = row['DERIVE']
+            
+            current_gap = abs(aevo_mid - deri_mid)
+            if current_gap < 5.0:
+                actual_pnl = (abs(trade['entry_aevo_mid'] - trade['entry_deri_mid']) - current_gap) * trade['trade_size']
+                unwinds.append({
+                    'trade_id': trade_id,
+                    'pair': trade['pair'],
+                    'wide_exchange': trade['wide_exchange'],
+                    'tight_exchange': trade['tight_exchange'],
+                    'actual_pnl': actual_pnl
+                })
+                conn.execute(f"UPDATE open_trades SET status = 'CLOSED' WHERE trade_id = {trade_id}")
+                conn.commit()
+                
+        conn.close()
+        return unwinds
+    except Exception as e:
+        print(f"Error checking unwinds: {e}")
         return []
 
 def background_radar_loop():
@@ -141,12 +227,22 @@ def background_radar_loop():
                     
                     if sig_id not in sent_signals:
                         opt_type_ru = "CALL (Колл)" if opp['opt_type'] == "C" else "PUT (Пут)"
-                        
                         TRADE_SIZE = 0.1
                         actual_profit = opp['edge'] * TRADE_SIZE
 
+                        # Record trade in DB
+                        conn = sqlite3.connect(DB_PATH)
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                        INSERT INTO open_trades (expiry, strike, opt_type, pair, wide_exchange, tight_exchange, entry_aevo_mid, entry_deri_mid, trade_size, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+                        ''', (opp['expiry_iso'], opp['strike'], opp['opt_type'], opp['pair'], opp['wide_exchange'], opp['tight_exchange'], opp['entry_aevo_mid'], opp['entry_deri_mid'], TRADE_SIZE))
+                        trade_id = cursor.lastrowid
+                        conn.commit()
+                        conn.close()
+
                         msg = (
-                            f"🚨 СИГНАЛ: MAKER ARBITRAGE\n"
+                            f"🚨 СИГНАЛ НА ОТКРЫТИЕ (Сделка #{trade_id})\n"
                             f"Тикет: ETH\n"
                             f"Дата Экспирации: {opp['pretty_expiry']} ({opp['raw_expiry']})\n"
                             f"Страйк: {opp['strike']}\n"
@@ -162,6 +258,20 @@ def background_radar_loop():
                             bot.send_message(admin_id, msg, parse_mode='Markdown')
                             
                         sent_signals.add(sig_id)
+                        
+                # Check for unwinds
+                unwinds = check_unwind_signals()
+                for unwind in unwinds:
+                    unwind_msg = (
+                        f"✅ СИГНАЛ НА ЗАКРЫТИЕ (Сделка #{unwind['trade_id']})\n"
+                        f"Спред по {unwind['pair']} успешно схлопнулся!\n"
+                        f"Прибыль: ~${unwind['actual_pnl']:.2f}\n\n"
+                        f"Действие: Закройте обе ноги:\n"
+                        f"1. На {unwind['wide_exchange']} нажмите SELL (закрыть купленное/проданное)\n"
+                        f"2. На {unwind['tight_exchange']} нажмите BUY (закрыть проданное/купленное)"
+                    )
+                    for admin_id in authorized_admins:
+                        bot.send_message(admin_id, unwind_msg, parse_mode='Markdown')
                         
                 # Clear sent signals every 30 minutes to re-trigger if edge persists
                 if len(sent_signals) > 100:

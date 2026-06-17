@@ -129,12 +129,20 @@ def background_radar_loop():
                     if sig_id not in sent_signals:
                         opt_type_ru = "CALL (Колл)" if opp['opt_type'] == "C" else "PUT (Пут)"
                         
+                        raw_expiry = opp['pair'].split('-')[1]
+                        try:
+                            from datetime import datetime
+                            parsed_date = datetime.strptime(raw_expiry, "%d%b%y")
+                            pretty_expiry = parsed_date.strftime("%d %b %y") # e.g. "31 Jul 26"
+                        except:
+                            pretty_expiry = raw_expiry
+                        
                         msg = (
                             f"🚨 *АРБИТРАЖНЫЙ СИГНАЛ (Профит: ~${opp['edge']:.2f})* 🚨\n\n"
                             f"📝 *ПОШАГОВАЯ ИНСТРУКЦИЯ:*\n"
                             f"1️⃣ Откройте биржу: *{opp['wide_exchange']}*\n"
                             f"2️⃣ Выберите актив: *ETH*\n"
-                            f"3️⃣ Найдите экспирацию (дату): *{opp['pair'].split('-')[1]}*\n"
+                            f"3️⃣ Найдите экспирацию (дату): *{pretty_expiry}* (тикер: {raw_expiry})\n"
                             f"4️⃣ Выберите тип опциона: *{opt_type_ru}*\n"
                             f"5️⃣ Выберите страйк: *{opp['strike']}*\n\n"
                             f"🎯 *ВЫСТАВЛЕНИЕ ОРДЕРА:*\n"

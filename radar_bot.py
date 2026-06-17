@@ -71,6 +71,15 @@ def get_h7_opportunities():
         for idx, row in merged.iterrows():
             expiry, opt_type, strike = idx
             
+            # Parse expiry date correctly
+            try:
+                dt = pd.to_datetime(expiry)
+                pretty_expiry = dt.strftime("%d %b %y") # '18 Jun 26'
+                raw_expiry = dt.strftime("%d%b%y").upper() # '18JUN26'
+            except:
+                pretty_expiry = str(expiry)
+                raw_expiry = str(expiry)
+            
             aevo_bid, aevo_ask = row['bid_1']['AEVO'], row['ask_1']['AEVO']
             deri_bid, deri_ask = row['bid_1']['DERIVE'], row['ask_1']['DERIVE']
             aevo_mid, deri_mid = row['mid_price']['AEVO'], row['mid_price']['DERIVE']
@@ -85,7 +94,9 @@ def get_h7_opportunities():
                             'type': 'MAKER_ARB',
                             'wide_exchange': 'Derive (Lyra)',
                             'tight_exchange': 'Aevo',
-                            'pair': f"ETH-{expiry.split(' ')[0]}-{strike}-{opt_type}",
+                            'pretty_expiry': pretty_expiry,
+                            'raw_expiry': raw_expiry,
+                            'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
                             'strike': strike,
                             'opt_type': opt_type,
                             'edge': edge,
@@ -102,7 +113,9 @@ def get_h7_opportunities():
                             'type': 'MAKER_ARB',
                             'wide_exchange': 'Aevo',
                             'tight_exchange': 'Derive (Lyra)',
-                            'pair': f"ETH-{expiry.split(' ')[0]}-{strike}-{opt_type}",
+                            'pretty_expiry': pretty_expiry,
+                            'raw_expiry': raw_expiry,
+                            'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
                             'strike': strike,
                             'opt_type': opt_type,
                             'edge': edge,
@@ -129,22 +142,13 @@ def background_radar_loop():
                     if sig_id not in sent_signals:
                         opt_type_ru = "CALL (Колл)" if opp['opt_type'] == "C" else "PUT (Пут)"
                         
-                        raw_expiry = opp['pair'].split('-')[1]
-                        try:
-                            from datetime import datetime
-                            parsed_date = datetime.strptime(raw_expiry, "%d%b%y")
-                            pretty_expiry = parsed_date.strftime("%d %b %y") # e.g. "31 Jul 26"
-                        except:
-                            pretty_expiry = raw_expiry
-                            
-                        # Считаем профит с учетом нашего капитала
                         TRADE_SIZE = 0.1
                         actual_profit = opp['edge'] * TRADE_SIZE
-                        
+
                         msg = (
                             f"🚨 СИГНАЛ: MAKER ARBITRAGE\n"
                             f"Тикет: ETH\n"
-                            f"Дата Экспирации: {pretty_expiry} ({raw_expiry})\n"
+                            f"Дата Экспирации: {opp['pretty_expiry']} ({opp['raw_expiry']})\n"
                             f"Страйк: {opp['strike']}\n"
                             f"Сторона: {opt_type_ru}\n"
                             f"Действие: {opp['action']}\n"

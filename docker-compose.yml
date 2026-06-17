@@ -26,3 +26,19 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  dashboard:
+    build: .
+    container_name: options-dashboard
+    volumes:
+      - ./data.sqlite:/app/data.sqlite
+      - ./dashboard:/app/dashboard
+    ports:
+      - "8080:8080"
+    command: uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

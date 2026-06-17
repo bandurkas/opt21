@@ -31,15 +31,30 @@ def init_db():
         expiry TEXT,
         strike REAL,
         opt_type TEXT,
+        pair TEXT,
         wide_exchange TEXT,
         tight_exchange TEXT,
         entry_aevo_mid REAL,
         entry_deri_mid REAL,
         trade_size REAL,
         status TEXT,
+        actual_pnl REAL DEFAULT 0.0,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    conn.execute('''
+    CREATE TABLE IF NOT EXISTS paper_accounts (
+        exchange TEXT PRIMARY KEY,
+        balance REAL
+    )
+    ''')
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM paper_accounts")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO paper_accounts (exchange, balance) VALUES ('AEVO', 50.0)")
+        cursor.execute("INSERT INTO paper_accounts (exchange, balance) VALUES ('DERIVE', 50.0)")
+        
     conn.commit()
     conn.close()
 
@@ -205,7 +220,12 @@ def check_unwind_signals():
                     'tight_exchange': trade['tight_exchange'],
                     'actual_pnl': actual_pnl
                 })
-                conn.execute(f"UPDATE open_trades SET status = 'CLOSED' WHERE trade_id = {trade_id}")
+                conn.execute(f"UPDATE open_trades SET status = 'CLOSED', actual_pnl = {actual_pnl} WHERE trade_id = {trade_id}")
+                
+                # Split profit evenly between the two exchanges
+                half_pnl = actual_pnl / 2.0
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'AEVO'")
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'DERIVE'")
                 conn.commit()
                 
         conn.close()
@@ -227,12 +247,26 @@ def background_radar_loop():
                     
                     if sig_id not in sent_signals:
                         opt_type_ru = "CALL (Колл)" if opp['opt_type'] == "C" else "PUT (Пут)"
-                        TRADE_SIZE = 0.1
+                        TRADE_SIZE = 0.05
                         actual_profit = opp['edge'] * TRADE_SIZE
 
-                        # Record trade in DB
+                        # Connect to DB and check margins
                         conn = sqlite3.connect(DB_PATH)
                         cursor = conn.cursor()
+                        
+                        open_count = cursor.execute("SELECT COUNT(*) FROM open_trades WHERE status = 'OPEN'").fetchone()[0]
+                        MARGIN_REQUIRED_PER_TRADE = 18.0
+                        total_locked_margin = open_count * MARGIN_REQUIRED_PER_TRADE
+                        
+                        aevo_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO'").fetchone()[0]
+                        deri_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE'").fetchone()[0]
+                        
+                        if (aevo_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE or (deri_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE:
+                            print(f"Skipping {sig_id} due to insufficient margin.")
+                            conn.close()
+                            continue
+
+                        # Record trade in DB
                         cursor.execute('''
                         INSERT INTO open_trades (expiry, strike, opt_type, pair, wide_exchange, tight_exchange, entry_aevo_mid, entry_deri_mid, trade_size, status)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paper Trading Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <header class="dashboard-header">
+            <h1>Paper Trading Dashboard</h1>
+            <div class="total-equity-card glass-card">
+                <span class="label">Total Equity</span>
+                <span class="value" id="total_equity">$0.00</span>
+            </div>
+        </header>
+
+        <section class="balances-section">
+            <div class="balance-card glass-card">
+                <div class="exchange-logo">A</div>
+                <div class="balance-info">
+                    <span class="label">Aevo Balance</span>
+                    <span class="value" id="aevo_balance">$0.00</span>
+                </div>
+            </div>
+            <div class="balance-card glass-card">
+                <div class="exchange-logo">D</div>
+                <div class="balance-info">
+                    <span class="label">Derive Balance</span>
+                    <span class="value" id="deri_balance">$0.00</span>
+                </div>
+            </div>
+            <div class="balance-card glass-card highlight">
+                <div class="exchange-logo">P</div>
+                <div class="balance-info">
+                    <span class="label">Floating PnL</span>
+                    <span class="value" id="floating_pnl">$0.00</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="tables-section">
+            <div class="table-container glass-card">
+                <h2>Active Positions</h2>
+                <table id="open_trades_table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Time</th>
+                            <th>Pair</th>
+                            <th>Size</th>
+                            <th>Entry Gap</th>
+                            <th>Current Gap</th>
+                            <th>Floating PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Rows injected by JS -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="table-container glass-card">
+                <h2>Trade History</h2>
+                <table id="closed_trades_table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Time closed</th>
+                            <th>Pair</th>
+                            <th>Size</th>
+                            <th>Realized PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Rows injected by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

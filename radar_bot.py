@@ -127,12 +127,22 @@ def background_radar_loop():
                     sig_id = f"{opp['pair']}_{opp['wide_exchange']}"
                     
                     if sig_id not in sent_signals:
+                        opt_type_ru = "CALL (Колл)" if opp['opt_type'] == "C" else "PUT (Пут)"
+                        
                         msg = (
-                            f"🚨 *MAKER ARBITRAGE EDGE: ${opp['edge']:.2f}*\n\n"
-                            f"📍 Биржа для лимитки: {opp['wide_exchange']}\n"
-                            f"📦 Пара: {opp['pair']}\n"
-                            f"⚡ Действие: {opp['action']}\n\n"
-                            f"*(Справедливая цена конкурента: ${opp['fair_price']:.2f})*"
+                            f"🚨 *АРБИТРАЖНЫЙ СИГНАЛ (Профит: ~${opp['edge']:.2f})* 🚨\n\n"
+                            f"📝 *ПОШАГОВАЯ ИНСТРУКЦИЯ:*\n"
+                            f"1️⃣ Откройте биржу: *{opp['wide_exchange']}*\n"
+                            f"2️⃣ Выберите актив: *ETH*\n"
+                            f"3️⃣ Найдите экспирацию (дату): *{opp['pair'].split('-')[1]}*\n"
+                            f"4️⃣ Выберите тип опциона: *{opt_type_ru}*\n"
+                            f"5️⃣ Выберите страйк: *{opp['strike']}*\n\n"
+                            f"🎯 *ЧТО ДЕЛАТЬ ДАЛЬШЕ:*\n"
+                            f"Вам нужно выступить маркет-мейкером, так как спред (разница между покупкой и продажей) сейчас огромный.\n"
+                            f"👉 {opp['action']}\n\n"
+                            f"💡 *ПОЧЕМУ ЭТО ВЫГОДНО:*\n"
+                            f"На другой бирже ({opp['tight_exchange']}) этот же опцион сейчас торгуется по справедливой цене *${opp['fair_price']:.2f}*.\n"
+                            f"Если кто-то заберет вашу лимитку на {opp['wide_exchange']}, вы тут же перекроете ее на {opp['tight_exchange']} и положите разницу в карман!"
                         )
                         
                         for admin_id in authorized_admins:

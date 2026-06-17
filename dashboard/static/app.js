@@ -15,15 +15,29 @@ function getPnLClass(value) {
     return value >= 0 ? 'pnl-positive' : 'pnl-negative';
 }
 
+let currentStrategy = 'H7';
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        currentStrategy = e.target.getAttribute('data-target');
+        updateDashboard(); // immediately update on switch
+    });
+});
+
 async function updateDashboard() {
     try {
         const response = await fetch('/api/data');
-        const data = await response.json();
+        const rawData = await response.json();
 
-        if (data.error) {
-            console.error(data.error);
+        if (rawData.error) {
+            console.error(rawData.error);
             return;
         }
+        
+        const data = rawData[currentStrategy];
+        if (!data) return;
 
         // Update Balances
         document.getElementById('total_equity').textContent = formatCurrency(data.total_equity);
@@ -38,7 +52,7 @@ async function updateDashboard() {
         const openTbody = document.querySelector('#open_trades_table tbody');
         openTbody.innerHTML = '';
         if (data.open_trades.length === 0) {
-            openTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No active positions</td></tr>';
+            openTbody.innerHTML = '<tr><td colspan="8" class="empty-state">No active positions</td></tr>';
         } else {
             data.open_trades.forEach(trade => {
                 const tr = document.createElement('tr');
@@ -61,7 +75,7 @@ async function updateDashboard() {
         const closedTbody = document.querySelector('#closed_trades_table tbody');
         closedTbody.innerHTML = '';
         if (data.closed_trades.length === 0) {
-            closedTbody.innerHTML = '<tr><td colspan="5" class="empty-state">No closed trades yet</td></tr>';
+            closedTbody.innerHTML = '<tr><td colspan="6" class="empty-state">No closed trades yet</td></tr>';
         } else {
             data.closed_trades.forEach(trade => {
                 const tr = document.createElement('tr');

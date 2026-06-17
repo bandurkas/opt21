@@ -29,88 +29,82 @@ async def get_data():
         return {"error": "Database not found"}
         
     conn = get_db_connection()
+    response_data = {}
     
-    # 1. Get Balances
-    aevo_bal = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO'").fetchone()
-    deri_bal = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE'").fetchone()
-    aevo_bal = aevo_bal[0] if aevo_bal else 50.0
-    deri_bal = deri_bal[0] if deri_bal else 50.0
-    
-    # 2. Get Open Trades and Calculate Floating PnL
-    open_trades_raw = conn.execute("SELECT * FROM open_trades WHERE status = 'OPEN' ORDER BY timestamp DESC").fetchall()
-    open_trades = [dict(r) for r in open_trades_raw]
-    
-    if open_trades:
-        # Get latest mid prices
-        latest_time = conn.execute("SELECT MAX(timestamp) FROM options_data").fetchone()[0]
-        latest_data = pd.read_sql_query(f"SELECT exchange, expiry, strike, option_type, ask_1, bid_1 FROM options_data WHERE timestamp = '{latest_time}'", conn)
-        latest_data['mid'] = (latest_data['ask_1'] + latest_data['bid_1']) / 2
-        merged = latest_data.pivot_table(index=['expiry', 'option_type', 'strike'], columns='exchange', values='mid').reset_index()
+    for strategy in ['H7', 'H1', 'H2']:
+        # 1. Get Balances
+        aevo_bal_row = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO' AND strategy = ?", (strategy,)).fetchone()
+        deri_bal_row = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE' AND strategy = ?", (strategy,)).fetchone()
+        aevo_bal = aevo_bal_row[0] if aevo_bal_row else 50.0
+        deri_bal = deri_bal_row[0] if deri_bal_row else 50.0
         
-        for trade in open_trades:
-            mask = (merged['expiry'] == trade['expiry']) & (merged['option_type'] == trade['opt_type']) & (merged['strike'] == trade['strike'])
-            trade['floating_pnl'] = 0.0
-            trade['current_gap'] = 0.0
-            if mask.any():
-                row = merged[mask].iloc[0]
-                if not pd.isna(row.get('AEVO')) and not pd.isna(row.get('DERIVE')):
-                    aevo_mid = row['AEVO']
-                    deri_mid = row['DERIVE']
-                    current_gap = abs(aevo_mid - deri_mid)
-                    entry_gap = abs(trade['entry_aevo_mid'] - trade['entry_deri_mid'])
-                    trade['current_gap'] = current_gap
-                    trade['floating_pnl'] = (entry_gap - current_gap) * trade['trade_size']
-                    
-            # Format time
+        # 2. Get Open Trades
+        open_trades_raw = conn.execute("SELECT * FROM open_trades WHERE status = 'OPEN' AND strategy = ? ORDER BY timestamp DESC", (strategy,)).fetchall()
+        open_trades = [dict(r) for r in open_trades_raw]
+        
+        if open_trades:
+            latest_time = conn.execute("SELECT MAX(timestamp) FROM options_data").fetchone()[0]
+            latest_data = pd.read_sql_query(f"SELECT exchange, expiry, strike, option_type, ask_1, bid_1 FROM options_data WHERE timestamp = '{latest_time}'", conn)
+            latest_data['mid'] = (latest_data['ask_1'] + latest_data['bid_1']) / 2
+            merged = latest_data.pivot_table(index=['expiry', 'option_type', 'strike'], columns='exchange', values='mid').reset_index()
+            
+            for trade in open_trades:
+                trade['floating_pnl'] = 0.0
+                trade['current_gap'] = 0.0
+                mask = (merged['expiry'] == trade['expiry']) & (merged['option_type'] == trade['opt_type']) & (merged['strike'] == trade['strike'])
+                if mask.any():
+                    row = merged[mask].iloc[0]
+                    if not pd.isna(row.get('AEVO')) and not pd.isna(row.get('DERIVE')):
+                        aevo_mid = row['AEVO']
+                        deri_mid = row['DERIVE']
+                        if strategy == 'H1':
+                            # Simple directional for H1 since we just bought/sold on Derive
+                            trade['current_gap'] = 0.0
+                            trade['floating_pnl'] = abs(deri_mid - trade['entry_deri_mid']) * trade['trade_size'] - 0.25
+                        else:
+                            current_gap = abs(aevo_mid - deri_mid)
+                            entry_gap = abs(trade['entry_aevo_mid'] - trade['entry_deri_mid'])
+                            trade['current_gap'] = current_gap
+                            trade['floating_pnl'] = (entry_gap - current_gap) * trade['trade_size']
+                            
+                # Format time
+                dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00'))
+                trade['time_str'] = dt.strftime('%H:%M:%S')
+                now = datetime.utcnow()
+                diff = now - dt.replace(tzinfo=None)
+                mins, secs = divmod(diff.total_seconds(), 60)
+                hours, mins = divmod(mins, 60)
+                trade['duration_str'] = f"{int(hours)}h {int(mins)}m" if hours > 0 else f"{int(mins)}m {int(secs)}s"
+
+        # 3. Get Closed Trades
+        closed_trades_raw = conn.execute("SELECT * FROM open_trades WHERE status = 'CLOSED' AND strategy = ? ORDER BY timestamp DESC LIMIT 20", (strategy,)).fetchall()
+        closed_trades = []
+        for r in closed_trades_raw:
+            trade = dict(r)
             dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00'))
             trade['time_str'] = dt.strftime('%H:%M:%S')
-            
-            # Calculate duration
-            now = datetime.utcnow()
-            dt_utc = dt.replace(tzinfo=None)
-            diff = now - dt_utc
-            mins, secs = divmod(diff.total_seconds(), 60)
-            hours, mins = divmod(mins, 60)
-            if hours > 0:
-                trade['duration_str'] = f"{int(hours)}h {int(mins)}m"
+            if trade.get('close_time'):
+                close_dt = datetime.fromisoformat(trade['close_time'].replace('Z', '+00:00'))
+                diff = close_dt - dt
+                mins, secs = divmod(diff.total_seconds(), 60)
+                hours, mins = divmod(mins, 60)
+                trade['duration_str'] = f"{int(hours)}h {int(mins)}m" if hours > 0 else f"{int(mins)}m {int(secs)}s"
             else:
-                trade['duration_str'] = f"{int(mins)}m {int(secs)}s"
-
-    # 3. Get Closed Trades
-    closed_trades_raw = conn.execute("SELECT * FROM open_trades WHERE status = 'CLOSED' ORDER BY timestamp DESC LIMIT 20").fetchall()
-    closed_trades = []
-    for r in closed_trades_raw:
-        trade = dict(r)
-        dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00'))
-        trade['time_str'] = dt.strftime('%H:%M:%S')
+                trade['duration_str'] = "-"
+            closed_trades.append(trade)
+            
+        total_balance = aevo_bal + deri_bal
+        floating_total = sum([t.get('floating_pnl', 0.0) for t in open_trades])
+        total_equity = total_balance + floating_total
         
-        if trade.get('close_time'):
-            close_dt = datetime.fromisoformat(trade['close_time'].replace('Z', '+00:00'))
-            diff = close_dt - dt
-            mins, secs = divmod(diff.total_seconds(), 60)
-            hours, mins = divmod(mins, 60)
-            if hours > 0:
-                trade['duration_str'] = f"{int(hours)}h {int(mins)}m"
-            else:
-                trade['duration_str'] = f"{int(mins)}m {int(secs)}s"
-        else:
-            trade['duration_str'] = "-"
-            
-        closed_trades.append(trade)
+        response_data[strategy] = {
+            "aevo_balance": aevo_bal,
+            "deri_balance": deri_bal,
+            "total_equity": total_equity,
+            "floating_pnl": floating_total,
+            "open_trades": open_trades,
+            "closed_trades": closed_trades
+        }
         
     conn.close()
-    
-    # Calculate Total
-    total_balance = aevo_bal + deri_bal
-    # Add floating
-    floating_total = sum([t['floating_pnl'] for t in open_trades])
-    total_equity = total_balance + floating_total
-    
-    return {
-        "aevo_balance": aevo_bal,
-        "deri_balance": deri_bal,
-        "total_equity": total_equity,
-        "floating_pnl": floating_total,
-        "open_trades": open_trades,
-        "closed_trades": closed_trades
-    }
+    return response_data

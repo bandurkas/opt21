@@ -120,7 +120,7 @@ def analyze_h2_smile_error(df):
         aevo_ask = row['ask_1']['AEVO']
         derive_bid = row['bid_1']['DERIVE']
         derive_ask = row['ask_1']['DERIVE']
-        diff = row['iv_diff_pct']
+        diff = float(row.get('iv_diff_pct', row['iv_diff_pct'].iloc[0] if isinstance(row['iv_diff_pct'], pd.Series) else row['iv_diff_pct']))
         
         print(f"{expiry.date()} | {opt_type.upper()} | Strike {strike}")
         print(f"   AEVO IV: {aevo_iv:.4f} (Bid: {aevo_bid}, Ask: {aevo_ask})")

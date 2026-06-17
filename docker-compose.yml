@@ -42,3 +42,29 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  h1-bot:
+    build: .
+    container_name: options-h1-bot
+    volumes:
+      - ./data.sqlite:/app/data.sqlite
+    command: python h1_bot.py
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  h2-bot:
+    build: .
+    container_name: options-h2-bot
+    volumes:
+      - ./data.sqlite:/app/data.sqlite
+    command: python h2_bot.py
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

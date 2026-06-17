@@ -28,6 +28,7 @@ def init_db():
     conn.execute('''
     CREATE TABLE IF NOT EXISTS open_trades (
         trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy TEXT DEFAULT 'H7',
         expiry TEXT,
         strike REAL,
         opt_type TEXT,
@@ -45,16 +46,19 @@ def init_db():
     ''')
     conn.execute('''
     CREATE TABLE IF NOT EXISTS paper_accounts (
-        exchange TEXT PRIMARY KEY,
-        balance REAL
+        strategy TEXT,
+        exchange TEXT,
+        balance REAL,
+        PRIMARY KEY (strategy, exchange)
     )
     ''')
     
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM paper_accounts")
     if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO paper_accounts (exchange, balance) VALUES ('AEVO', 50.0)")
-        cursor.execute("INSERT INTO paper_accounts (exchange, balance) VALUES ('DERIVE', 50.0)")
+        for strat in ['H7', 'H1', 'H2']:
+            cursor.execute("INSERT INTO paper_accounts (strategy, exchange, balance) VALUES (?, 'AEVO', 50.0)", (strat,))
+            cursor.execute("INSERT INTO paper_accounts (strategy, exchange, balance) VALUES (?, 'DERIVE', 50.0)", (strat,))
         
     conn.commit()
     conn.close()
@@ -176,7 +180,7 @@ def check_unwind_signals():
     unwinds = []
     try:
         conn = sqlite3.connect(DB_PATH)
-        open_trades = pd.read_sql_query("SELECT * FROM open_trades WHERE status = 'OPEN'", conn)
+        open_trades = pd.read_sql_query("SELECT * FROM open_trades WHERE status = 'OPEN' AND strategy = 'H7'", conn)
         
         if open_trades.empty:
             conn.close()
@@ -225,8 +229,8 @@ def check_unwind_signals():
                 
                 # Split profit evenly between the two exchanges
                 half_pnl = actual_pnl / 2.0
-                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'AEVO'")
-                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'DERIVE'")
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'AEVO' AND strategy = 'H7'")
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'DERIVE' AND strategy = 'H7'")
                 conn.commit()
                 
         conn.close()
@@ -255,12 +259,12 @@ def background_radar_loop():
                         conn = sqlite3.connect(DB_PATH)
                         cursor = conn.cursor()
                         
-                        open_count = cursor.execute("SELECT COUNT(*) FROM open_trades WHERE status = 'OPEN'").fetchone()[0]
+                        open_count = cursor.execute("SELECT COUNT(*) FROM open_trades WHERE status = 'OPEN' AND strategy = 'H7'").fetchone()[0]
                         MARGIN_REQUIRED_PER_TRADE = 18.0
                         total_locked_margin = open_count * MARGIN_REQUIRED_PER_TRADE
                         
-                        aevo_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO'").fetchone()[0]
-                        deri_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE'").fetchone()[0]
+                        aevo_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO' AND strategy = 'H7'").fetchone()[0]
+                        deri_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE' AND strategy = 'H7'").fetchone()[0]
                         
                         if (aevo_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE or (deri_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE:
                             print(f"Skipping {sig_id} due to insufficient margin.")
@@ -269,8 +273,8 @@ def background_radar_loop():
 
                         # Record trade in DB
                         cursor.execute('''
-                        INSERT INTO open_trades (expiry, strike, opt_type, pair, wide_exchange, tight_exchange, entry_aevo_mid, entry_deri_mid, trade_size, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+                        INSERT INTO open_trades (strategy, expiry, strike, opt_type, pair, wide_exchange, tight_exchange, entry_aevo_mid, entry_deri_mid, trade_size, status)
+                        VALUES ('H7', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
                         ''', (opp['expiry_iso'], opp['strike'], opp['opt_type'], opp['pair'], opp['wide_exchange'], opp['tight_exchange'], opp['entry_aevo_mid'], opp['entry_deri_mid'], TRADE_SIZE))
                         trade_id = cursor.lastrowid
                         conn.commit()

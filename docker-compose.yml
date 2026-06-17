@@ -6,6 +6,8 @@ services:
     container_name: options-collector
     volumes:
       - ./data.sqlite:/app/data.sqlite
+    environment:
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -19,6 +21,8 @@ services:
     volumes:
       - ./data.sqlite:/app/data.sqlite
       - ./admins.json:/app/admins.json
+    environment:
+      - PYTHONUNBUFFERED=1
     command: python radar_bot.py
     restart: unless-stopped
     logging:
@@ -48,6 +52,8 @@ services:
     container_name: options-h1-bot
     volumes:
       - ./data.sqlite:/app/data.sqlite
+    environment:
+      - PYTHONUNBUFFERED=1
     command: python h1_bot.py
     restart: unless-stopped
     logging:
@@ -61,6 +67,8 @@ services:
     container_name: options-h2-bot
     volumes:
       - ./data.sqlite:/app/data.sqlite
+    environment:
+      - PYTHONUNBUFFERED=1
     command: python h2_bot.py
     restart: unless-stopped
     logging:

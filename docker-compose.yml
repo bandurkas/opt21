@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  collector:
+    build: .
+    container_name: options-collector
+    volumes:
+      - ./data.sqlite:/app/data.sqlite
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  radar:
+    build: .
+    container_name: options-radar
+    volumes:
+      - ./data.sqlite:/app/data.sqlite
+      - ./admins.json:/app/admins.json
+    command: python radar_bot.py
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

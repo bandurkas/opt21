@@ -101,17 +101,12 @@ def get_h7_opportunities():
         df['timestamp_utc'] = pd.to_datetime(df['timestamp'], utc=True)
         df['expiry_utc'] = pd.to_datetime(df['expiry'], utc=True)
         df['dte'] = (df['expiry_utc'] - df['timestamp_utc']).dt.total_seconds() / 86400.0
-        df = df[df['dte'] < 30] # DTE < 30 filter
+        df = df[(df['dte'] >= 3) & (df['dte'] < 30)] # DTE 3-30 filter
         
+        # Strict Moneyness Filter (+/- 10%)
         df['moneyness'] = df['strike'] / df['underlying_price']
-        def is_otm(row):
-            m = row['moneyness']
-            opt = row['option_type']
-            if opt == 'C' and m > 1.05: return True
-            if opt == 'P' and m < 0.95: return True
-            return False
-        df['is_otm'] = df.apply(is_otm, axis=1)
-        df = df[~df['is_otm']] # No OTM filter
+        df['m_dist'] = (df['moneyness'] - 1.0).abs()
+        df = df[df['m_dist'] <= 0.10]
         
         latest_time = df['timestamp'].max()
         latest_df = df[df['timestamp'] >= latest_time - pd.Timedelta(minutes=2)]
@@ -155,7 +150,7 @@ def get_h7_opportunities():
                     spread1, spread2 = row['spread'][ex1], row['spread'][ex2]
                     
                     # Check ex1 Wide / ex2 Tight
-                    if (spread1 - spread2) > 20.0 and spread1 > spread2 * 2:
+                    if (spread1 - spread2) > 20.0 and spread1 > spread2 * 2 and mid2 >= 5.0:
                         edge = (spread1 - spread2) / 2
                         opportunities.append({
                             'type': 'MAKER_ARB',
@@ -175,7 +170,7 @@ def get_h7_opportunities():
                         })
                                 
                     # Check ex2 Wide / ex1 Tight
-                    elif (spread2 - spread1) > 20.0 and spread2 > spread1 * 2:
+                    elif (spread2 - spread1) > 20.0 and spread2 > spread1 * 2 and mid1 >= 5.0:
                         edge = (spread2 - spread1) / 2
                         opportunities.append({
                             'type': 'MAKER_ARB',

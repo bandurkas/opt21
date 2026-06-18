@@ -4,6 +4,7 @@ import time
 import threading
 import sqlite3
 import pandas as pd
+from datetime import datetime
 import telebot
 
 TOKEN = "7135215656:AAF276QckBUylAPWKD-VLy6DanfwBxhqAng"
@@ -80,7 +81,7 @@ def get_h7_opportunities():
         conn = sqlite3.connect(DB_PATH)
         query = """
         SELECT timestamp, exchange, symbol, strike, expiry, option_type, 
-               mark_price, bid_1, ask_1
+               mark_price, bid_1, ask_1, underlying_price
         FROM options_data
         WHERE exchange IN ('DERIVE', 'AEVO')
         """
@@ -98,6 +99,22 @@ def get_h7_opportunities():
         df['spread'] = df['ask_1'] - df['bid_1']
         df['mid_price'] = (df['ask_1'] + df['bid_1']) / 2
         df = df[(df['spread'] > 0) & (df['bid_1'] > 0)]
+        
+        # SMART FILTERS
+        df['timestamp_utc'] = pd.to_datetime(df['timestamp'], utc=True)
+        df['expiry_utc'] = pd.to_datetime(df['expiry'], utc=True)
+        df['dte'] = (df['expiry_utc'] - df['timestamp_utc']).dt.total_seconds() / 86400.0
+        df = df[df['dte'] < 30] # DTE < 30 filter
+        
+        df['moneyness'] = df['strike'] / df['underlying_price']
+        def is_otm(row):
+            m = row['moneyness']
+            opt = row['option_type']
+            if opt == 'C' and m > 1.05: return True
+            if opt == 'P' and m < 0.95: return True
+            return False
+        df['is_otm'] = df.apply(is_otm, axis=1)
+        df = df[~df['is_otm']] # No OTM filter
         
         latest_time = df['timestamp'].max()
         latest_df = df[df['timestamp'] >= latest_time - pd.Timedelta(minutes=2)]
@@ -216,14 +233,29 @@ def check_unwind_signals():
             deri_mid = row['DERIVE']
             
             current_gap = abs(aevo_mid - deri_mid)
+            actual_pnl = (abs(trade['entry_aevo_mid'] - trade['entry_deri_mid']) - current_gap) * trade['trade_size']
+            
+            dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
+            duration_hours = (datetime.utcnow() - dt).total_seconds() / 3600.0
+            
+            close_trade = False
+            close_reason = ""
+            
             if current_gap < 5.0:
-                actual_pnl = (abs(trade['entry_aevo_mid'] - trade['entry_deri_mid']) - current_gap) * trade['trade_size']
+                close_trade = True
+                close_reason = "Спред успешно схлопнулся!"
+            elif duration_hours > 2.0 and actual_pnl > 0.05:
+                close_trade = True
+                close_reason = "Выход по таймеру (2 часа в плюсе) ⏱️"
+                
+            if close_trade:
                 unwinds.append({
                     'trade_id': trade_id,
                     'pair': trade['pair'],
                     'wide_exchange': trade['wide_exchange'],
                     'tight_exchange': trade['tight_exchange'],
-                    'actual_pnl': actual_pnl
+                    'actual_pnl': actual_pnl,
+                    'reason': close_reason
                 })
                 conn.execute(f"UPDATE open_trades SET status = 'CLOSED', actual_pnl = {actual_pnl}, close_time = CURRENT_TIMESTAMP WHERE trade_id = {trade_id}")
                 
@@ -303,7 +335,7 @@ def background_radar_loop():
                 for unwind in unwinds:
                     unwind_msg = (
                         f"✅ СИГНАЛ НА ЗАКРЫТИЕ (Сделка #{unwind['trade_id']})\n"
-                        f"Спред по {unwind['pair']} успешно схлопнулся!\n"
+                        f"{unwind['reason']}\n"
                         f"Прибыль: ~${unwind['actual_pnl']:.2f}\n\n"
                         f"Действие: Закройте обе ноги:\n"
                         f"1. На {unwind['wide_exchange']} нажмите SELL (закрыть купленное/проданное)\n"

@@ -22,8 +22,24 @@ def check_h1_signals():
         t1 = timestamps[1] # previous
         
         # We only care about ATM options for IV shifts
-        data_t0 = pd.read_sql_query(f"SELECT exchange, expiry, strike, option_type, iv, ask_1, bid_1 FROM options_data WHERE timestamp = '{t0}' AND iv > 0", conn)
+        data_t0 = pd.read_sql_query(f"SELECT exchange, expiry, strike, option_type, iv, ask_1, bid_1, underlying_price FROM options_data WHERE timestamp = '{t0}' AND iv > 0", conn)
         data_t1 = pd.read_sql_query(f"SELECT exchange, expiry, strike, option_type, iv FROM options_data WHERE timestamp = '{t1}' AND iv > 0", conn)
+        
+        # SMART FILTERS
+        data_t0['timestamp_utc'] = pd.to_datetime(t0, utc=True)
+        data_t0['expiry_utc'] = pd.to_datetime(data_t0['expiry'], utc=True)
+        data_t0['dte'] = (data_t0['expiry_utc'] - data_t0['timestamp_utc']).dt.total_seconds() / 86400.0
+        data_t0 = data_t0[data_t0['dte'] < 30]
+        
+        data_t0['moneyness'] = data_t0['strike'] / data_t0['underlying_price']
+        def is_otm(row):
+            m = row['moneyness']
+            opt = row['option_type']
+            if opt == 'C' and m > 1.05: return True
+            if opt == 'P' and m < 0.95: return True
+            return False
+        data_t0['is_otm'] = data_t0.apply(is_otm, axis=1)
+        data_t0 = data_t0[~data_t0['is_otm']]
         
         data_t0['mid'] = (data_t0['ask_1'] + data_t0['bid_1']) / 2
         

@@ -76,3 +76,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  h3-bot:
+    build: .
+    container_name: options-h3-bot
+    volumes:
+      - ./data.sqlite:/app/data.sqlite
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python h3_bot.py
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

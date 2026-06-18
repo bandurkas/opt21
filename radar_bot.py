@@ -55,8 +55,8 @@ def init_db():
     ''')
     
     # Ensure BYBIT exists
-    conn.execute("INSERT OR IGNORE INTO paper_accounts (strategy, exchange, balance) VALUES ('H7', 'BYBIT', 50.0)")
-    conn.execute("INSERT OR IGNORE INTO paper_accounts (strategy, exchange, balance) VALUES ('H3', 'BYBIT', 50.0)")
+    conn.execute("INSERT OR IGNORE INTO paper_accounts (strategy, exchange, balance) VALUES ('H7', 'BYBIT', 1000.0)")
+    conn.execute("INSERT OR IGNORE INTO paper_accounts (strategy, exchange, balance) VALUES ('H3', 'BYBIT', 1000.0)")
         
     conn.commit()
     conn.close()
@@ -251,12 +251,18 @@ def check_unwind_signals():
             close_trade = False
             close_reason = ""
             
-            if current_gap < 5.0:
+            if current_gap < 5.0 or actual_pnl >= 10.0:
                 close_trade = True
-                close_reason = "Спред успешно схлопнулся!"
-            elif duration_hours > 2.0 and actual_pnl > 0.05:
+                close_reason = "Успешный арбитраж / Профит достигнут 🎯"
+            elif duration_hours >= 1.0 and actual_pnl >= 0.0:
                 close_trade = True
-                close_reason = "Выход по таймеру (2 часа в плюсе) ⏱️"
+                close_reason = "Таймаут 1 час (выход в Б/У или профит) ⏱️"
+            elif duration_hours >= 4.0 and actual_pnl >= -5.0:
+                close_trade = True
+                close_reason = "Таймаут 4 часа (минимизация убытка) ⚠️"
+            elif duration_hours >= 8.0:
+                close_trade = True
+                close_reason = "Жесткий таймаут 8 часов (Освобождение маржи) 🚨"
                 
             if close_trade:
                 unwinds.append({

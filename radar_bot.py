@@ -155,48 +155,44 @@ def get_h7_opportunities():
                     spread1, spread2 = row['spread'][ex1], row['spread'][ex2]
                     
                     # Check ex1 Wide / ex2 Tight
-                    if spread1 > spread2 * 2 and spread1 > 5.0:
-                        if mid2 > bid1 and mid2 < ask1:
-                            edge = min(abs(mid2 - mid1), (ask1 - mid2), (mid2 - bid1))
-                            if edge > 20:
-                                opportunities.append({
-                                    'type': 'MAKER_ARB',
-                                    'wide_exchange': ex1,
-                                    'tight_exchange': ex2,
-                                    'expiry_iso': str(expiry),
-                                    'pretty_expiry': pretty_expiry,
-                                    'raw_expiry': raw_expiry,
-                                    'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
-                                    'strike': strike,
-                                    'opt_type': opt_type,
-                                    'edge': edge,
-                                    'action': f"Выставить BUY Limit внутри спреда на {ex1} (~${mid2-1})",
-                                    'fair_price': mid2,
-                                    'entry_aevo_mid': mid1, # Store as mid1 and mid2 for generic use
-                                    'entry_deri_mid': mid2
-                                })
+                    if (spread1 - spread2) > 20.0 and spread1 > spread2 * 2:
+                        edge = (spread1 - spread2) / 2
+                        opportunities.append({
+                            'type': 'MAKER_ARB',
+                            'wide_exchange': ex1,
+                            'tight_exchange': ex2,
+                            'expiry_iso': str(expiry),
+                            'pretty_expiry': pretty_expiry,
+                            'raw_expiry': raw_expiry,
+                            'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
+                            'strike': strike,
+                            'opt_type': opt_type,
+                            'edge': edge,
+                            'action': f"Выставить Maker-ордер внутри спреда на {ex1} по мид-прайсу {ex2} (~${mid2:.1f})",
+                            'fair_price': mid2,
+                            'entry_aevo_mid': mid1, # Store as mid1 and mid2 for generic use
+                            'entry_deri_mid': mid2
+                        })
                                 
                     # Check ex2 Wide / ex1 Tight
-                    if spread2 > spread1 * 2 and spread2 > 5.0:
-                        if mid1 > bid2 and mid1 < ask2:
-                            edge = min(abs(mid1 - mid2), (ask2 - mid1), (mid1 - bid2))
-                            if edge > 20:
-                                opportunities.append({
-                                    'type': 'MAKER_ARB',
-                                    'wide_exchange': ex2,
-                                    'tight_exchange': ex1,
-                                    'expiry_iso': str(expiry),
-                                    'pretty_expiry': pretty_expiry,
-                                    'raw_expiry': raw_expiry,
-                                    'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
-                                    'strike': strike,
-                                    'opt_type': opt_type,
-                                    'edge': edge,
-                                    'action': f"Выставить BUY Limit внутри спреда на {ex2} (~${mid1-1})",
-                                    'fair_price': mid1,
-                                    'entry_aevo_mid': mid2,
-                                    'entry_deri_mid': mid1
-                                })
+                    elif (spread2 - spread1) > 20.0 and spread2 > spread1 * 2:
+                        edge = (spread2 - spread1) / 2
+                        opportunities.append({
+                            'type': 'MAKER_ARB',
+                            'wide_exchange': ex2,
+                            'tight_exchange': ex1,
+                            'expiry_iso': str(expiry),
+                            'pretty_expiry': pretty_expiry,
+                            'raw_expiry': raw_expiry,
+                            'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
+                            'strike': strike,
+                            'opt_type': opt_type,
+                            'edge': edge,
+                            'action': f"Выставить Maker-ордер внутри спреда на {ex2} по мид-прайсу {ex1} (~${mid1:.1f})",
+                            'fair_price': mid1,
+                            'entry_aevo_mid': mid2,
+                            'entry_deri_mid': mid1
+                        })
                                 
         return opportunities
     except Exception as e:

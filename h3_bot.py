@@ -14,12 +14,13 @@ def check_h3_signals():
         latest_time = pd.read_sql_query("SELECT MAX(timestamp) FROM options_data", conn).iloc[0,0]
         
         query = f"""
-        SELECT timestamp, exchange, expiry, strike, option_type, ask_1, bid_1, underlying_price
+        SELECT timestamp, exchange, expiry, strike, option_type, ask_1, bid_1, underlying_price, bid_1_vol, ask_1_vol
         FROM options_data
-        WHERE timestamp = '{latest_time}' AND bid_1 > 0 AND ask_1 > bid_1
+        WHERE timestamp = '{latest_time}' AND bid_1 > 0 AND ask_1 > bid_1 AND bid_1_vol >= 0.1 AND ask_1_vol >= 0.1
         """
         df = pd.read_sql_query(query, conn)
         df['mid'] = (df['ask_1'] + df['bid_1']) / 2
+        df['spread_pct'] = (df['ask_1'] - df['bid_1']) / df['mid']
         
         # SMART FILTERS
         df['timestamp_utc'] = pd.to_datetime(df['timestamp'], utc=True)
@@ -35,6 +36,9 @@ def check_h3_signals():
                 return 'ITM' if m > 1.05 else 'OTM' if m < 0.95 else 'ATM'
                 
         df['moneyness_cat'] = [get_money(row.option_type, row.strike / row.underlying_price) for _, row in df.iterrows()]
+        
+        # Filter out bad OTM spreads (> 30%)
+        df = df[~((df['moneyness_cat'] == 'OTM') & (df['spread_pct'] > 0.30))]
         
         merged = df.pivot_table(index=['expiry', 'option_type', 'strike', 'dte', 'moneyness_cat'], columns='exchange', values='mid').reset_index()
         
@@ -52,7 +56,7 @@ def check_h3_signals():
                 
                 temp_diff = (merged[ex1] - merged[ex2]).abs()
                 mask = (
-                    (temp_diff >= 15.0) &
+                    (temp_diff >= 10.0) &
                     (merged['moneyness_cat'] != 'ITM') &
                     ((merged['dte'] < 3) | (temp_diff >= 20.0)) &
                     merged[ex1].notna() & merged[ex2].notna()
@@ -67,7 +71,8 @@ def check_h3_signals():
                         'ex2': ex2,
                         'mid1': row[ex1],
                         'mid2': row[ex2],
-                        'gap': temp_diff.loc[_]
+                        'gap': temp_diff.loc[_],
+                        'lead_lag_note': f"Derive leads Aevo" if 'DERIVE' in [ex1, ex2] and 'AEVO' in [ex1, ex2] else "Triangle Arbitrage" if 'BYBIT' in [ex1, ex2] else ""
                     })
         
         cursor = conn.cursor()
@@ -99,7 +104,7 @@ def check_h3_signals():
             VALUES ('H3', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
             ''', (expiry, strike, opt_type, pair, ex1, ex2, opp['mid1'], opp['mid2'], TRADE_SIZE))
             conn.commit()
-            print(f"H3 Signal triggered on {pair} between {ex1} and {ex2} (Gap: ${opp['gap']:.2f})")
+            print(f"H3 Signal triggered on {pair} between {ex1} and {ex2} (Gap: ${opp['gap']:.2f}) {opp['lead_lag_note']}")
             
         conn.close()
     except Exception as e:

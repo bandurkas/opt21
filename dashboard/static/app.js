@@ -47,10 +47,12 @@ async function update() {
         // market snapshot
         const m = d.market;
         document.getElementById('spot').textContent = m.spot ? '$' + fmtInt(m.spot) : '—';
-        document.getElementById('rv').textContent = m.rv_24h != null ? m.rv_24h + '%' : 'accumulating…';
+        const rvEl = document.getElementById('rv');
+        if (m.rv_24h != null) { rvEl.textContent = m.rv_24h + '%'; rvEl.className = 'value'; }
+        else { rvEl.textContent = 'accumulating…'; rvEl.className = 'value pending'; }
         const vrpEl = document.getElementById('vrp');
         if (m.vrp != null) { vrpEl.textContent = (m.vrp >= 0 ? '+' : '') + m.vrp + ' pp'; vrpEl.className = 'value ' + pctClass(m.vrp); }
-        else { vrpEl.textContent = 'accumulating…'; vrpEl.className = 'value'; }
+        else { vrpEl.textContent = 'accumulating…'; vrpEl.className = 'value pending'; }
         document.getElementById('oi').textContent = fmtInt(m.bybit.total_oi);
         document.getElementById('pcr').textContent = m.bybit.pcr_oi ?? '—';
         const imbEl = document.getElementById('imb');

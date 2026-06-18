@@ -20,7 +20,7 @@ async def init_db():
         await db.commit()
 
 async def bybit_websocket_listener():
-    url = "wss://stream.bybit.com/v5/public/option"
+    url = "wss://stream.bytick.com/v5/public/option"
     while True:
         try:
             # Disable protocol-level pings as Bybit requires app-level JSON pings

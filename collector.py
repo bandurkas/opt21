@@ -19,47 +19,7 @@ async def init_db():
         await db.executescript(schema)
         await db.commit()
 
-async def bybit_websocket_listener():
-    url = "wss://stream.bytick.com/v5/public/option"
-    while True:
-        try:
-            # Disable protocol-level pings as Bybit requires app-level JSON pings
-            async with websockets.connect(url, ping_interval=None) as ws:
-                logger.info("Connected to Bybit WebSocket")
-                subscribe_msg = {"op": "subscribe", "args": ["tickers.ETH"]}
-                await ws.send(json.dumps(subscribe_msg))
-                
-                # Start a background task for app-level ping
-                async def ping_loop():
-                    while True:
-                        await asyncio.sleep(20)
-                        try:
-                            await ws.send(json.dumps({"req_id": "test", "op": "ping"}))
-                        except:
-                            break
-                            
-                ping_task = asyncio.create_task(ping_loop())
-                
-                try:
-                    while True:
-                        response = await ws.recv()
-                        msg = json.loads(response)
-                        
-                        if 'data' in msg:
-                            data = msg['data']
-                            if isinstance(data, dict):
-                                data = [data]
-                            for item in data:
-                                symbol = item.get('symbol')
-                                if symbol:
-                                    if symbol not in bybit_cache:
-                                        bybit_cache[symbol] = {}
-                                    bybit_cache[symbol].update(item)
-                finally:
-                    ping_task.cancel()
-        except Exception as e:
-            logger.error(f"Bybit WebSocket error: {e}. Reconnecting in 5s...")
-            await asyncio.sleep(5)
+# Removed Bybit WS Listener
 
 async def fetch_derive_instruments(client):
     url = "https://api.lyra.finance/public/get_instruments"
@@ -130,11 +90,22 @@ async def save_to_db(records):
         await db.commit()
     logger.info(f"Saved {len(records)} records to DB.")
 
-async def collect_bybit():
+async def collect_bybit(client):
+    logger.info("Fetching Bybit instruments via REST...")
+    url = "https://api.bytick.com/v5/market/tickers?category=option&baseCoin=ETH"
+    try:
+        response = await client.get(url)
+        data = response.json()
+        items = data.get('result', {}).get('list', [])
+    except Exception as e:
+        logger.error(f"Failed to fetch Bybit options: {e}")
+        return []
+        
     now = datetime.now(timezone.utc)
     records = []
     
-    for symbol, item in bybit_cache.items():
+    for item in items:
+        symbol = item.get('symbol')
         parts = symbol.split('-')
         if len(parts) != 4:
             continue
@@ -180,7 +151,7 @@ async def collect_bybit():
         if record['bid_1'] is not None or record['ask_1'] is not None:
             records.append(record)
             
-    logger.info(f"Processed {len(records)} Bybit records from websocket cache.")
+    logger.info(f"Processed {len(records)} Bybit records from REST.")
     return records
 
 async def collect_derive(client):
@@ -321,15 +292,14 @@ async def main():
     await init_db()
     logger.info("Database initialized")
     
-    # Start Bybit websocket listener in background
-    asyncio.create_task(bybit_websocket_listener())
+    # (Removed Bybit websocket listener)
 
     async with AsyncSession(impersonate="chrome110", verify=False) as client:
         while True:
             logger.info("Starting collection cycle...")
             try:
-                # We do not pass client to collect_bybit anymore
-                bybit_records = await collect_bybit()
+                # Fetch Bybit via REST
+                bybit_records = await collect_bybit(client)
                 derive_records = await collect_derive(client)
                 aevo_records = await collect_aevo(client)
                 

@@ -107,7 +107,7 @@ async def collect_bybit(client):
     for item in items:
         symbol = item.get('symbol')
         parts = symbol.split('-')
-        if len(parts) != 4:
+        if len(parts) < 4:
             continue
         
         strike = float(parts[2])

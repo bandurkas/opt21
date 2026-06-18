@@ -141,7 +141,8 @@ async def collect_bybit(client):
             except: return None
         
         try:
-            expiry_date = datetime.strptime(parts[1], '%d%b%y').replace(tzinfo=timezone.utc)
+            date_str = parts[1].title() # 24MAY24 -> 24May24
+            expiry_date = datetime.strptime(date_str, '%d%b%y').replace(tzinfo=timezone.utc)
         except:
             expiry_date = None
 
@@ -170,7 +171,7 @@ async def collect_bybit(client):
         }
         return record
 
-    tasks = [process_ticker(t) for t in tickers[:10]] # limit to 10 for safety in test
+    tasks = [process_ticker(t) for t in tickers] # process all tickers
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 

@@ -31,7 +31,7 @@ async def get_data():
     conn = get_db_connection()
     response_data = {}
     
-    for strategy in ['H7', 'H1', 'H2', 'H3']:
+    for strategy in ['H7', 'H3']:
         # 1. Get Balances
         aevo_bal_row = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO' AND strategy = ?", (strategy,)).fetchone()
         deri_bal_row = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE' AND strategy = ?", (strategy,)).fetchone()

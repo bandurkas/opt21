@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   collector:
     build: .
@@ -15,15 +13,19 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  radar:
-    build: .
-    container_name: options-radar
+  analytics:
+    # Reuses the collector image (already has pandas/numpy); code is mounted so updates
+    # need only a restart, no rebuild (VPS is 1-CPU x86). Dockerfile also bakes these in
+    # for a clean `docker compose build` from scratch.
+    image: opt21-collector:latest
+    container_name: options-analytics
     volumes:
       - ./data.sqlite:/app/data.sqlite
-      - ./admins.json:/app/admins.json
+      - ./analytics_collector.py:/app/analytics_collector.py
+      - ./analytics_schema.sql:/app/analytics_schema.sql
     environment:
       - PYTHONUNBUFFERED=1
-    command: python radar_bot.py
+    command: python analytics_collector.py
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -40,21 +42,6 @@ services:
     ports:
       - "8080:8080"
     command: uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  h3-bot:
-    build: .
-    container_name: options-h3-bot
-    volumes:
-      - ./data.sqlite:/app/data.sqlite
-    environment:
-      - PYTHONUNBUFFERED=1
-    command: python h3_bot.py
     restart: unless-stopped
     logging:
       driver: "json-file"

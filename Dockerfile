@@ -1,5 +1,6 @@
 FROM python:3.10-slim
 WORKDIR /app
-COPY collector.py radar_bot.py h3_bot.py db_schema.sql requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt pyTelegramBotAPI pandas numpy
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY collector.py analytics_collector.py db_schema.sql analytics_schema.sql ./
 CMD ["python", "collector.py"]

@@ -23,25 +23,40 @@ async def bybit_websocket_listener():
     url = "wss://stream.bybit.com/v5/public/option"
     while True:
         try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+            # Disable protocol-level pings as Bybit requires app-level JSON pings
+            async with websockets.connect(url, ping_interval=None) as ws:
                 logger.info("Connected to Bybit WebSocket")
                 subscribe_msg = {"op": "subscribe", "args": ["tickers.ETH"]}
                 await ws.send(json.dumps(subscribe_msg))
                 
-                while True:
-                    response = await ws.recv()
-                    msg = json.loads(response)
-                    
-                    if 'data' in msg:
-                        data = msg['data']
-                        if isinstance(data, dict):
-                            data = [data]
-                        for item in data:
-                            symbol = item.get('symbol')
-                            if symbol:
-                                if symbol not in bybit_cache:
-                                    bybit_cache[symbol] = {}
-                                bybit_cache[symbol].update(item)
+                # Start a background task for app-level ping
+                async def ping_loop():
+                    while True:
+                        await asyncio.sleep(20)
+                        try:
+                            await ws.send(json.dumps({"req_id": "test", "op": "ping"}))
+                        except:
+                            break
+                            
+                ping_task = asyncio.create_task(ping_loop())
+                
+                try:
+                    while True:
+                        response = await ws.recv()
+                        msg = json.loads(response)
+                        
+                        if 'data' in msg:
+                            data = msg['data']
+                            if isinstance(data, dict):
+                                data = [data]
+                            for item in data:
+                                symbol = item.get('symbol')
+                                if symbol:
+                                    if symbol not in bybit_cache:
+                                        bybit_cache[symbol] = {}
+                                    bybit_cache[symbol].update(item)
+                finally:
+                    ping_task.cancel()
         except Exception as e:
             logger.error(f"Bybit WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)

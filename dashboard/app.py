@@ -4,107 +4,126 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import sqlite3
 import os
-import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 app = FastAPI()
-
 app.mount("/static", StaticFiles(directory="dashboard/static"), name="static")
 templates = Jinja2Templates(directory="dashboard/templates")
 
 DB_PATH = "data.sqlite"
+CYCLE_SEC = 600          # analytics_collector interval
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Data needed before Phase-2 backtests can run (data-readiness, not edge-validation)
+HYP = {
+    "A": {"name": "Variance Risk Premium", "target_days": 28,
+          "needs": "≥4 weeks of IV vs subsequently-realized vol across regimes"},
+    "C": {"name": "BYBIT Order Flow → Vol/Direction", "target_days": 21,
+          "needs": "≥3 weeks of OI / volume / book-imbalance vs forward returns"},
+}
+
+
+def conn():
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    return c
+
+
+def _scalar(c, q, default=None):
+    try:
+        r = c.execute(q).fetchone()
+        return r[0] if r and r[0] is not None else default
+    except sqlite3.OperationalError:
+        return default
+
+
+def _iso(s):
+    if not s:
+        return None
+    return datetime.fromisoformat(s)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.get("/api/data")
-async def get_data():
+
+@app.get("/api/status")
+async def status():
     if not os.path.exists(DB_PATH):
         return {"error": "Database not found"}
-        
-    conn = get_db_connection()
-    response_data = {}
-    
-    for strategy in ['H7', 'H3']:
-        # 1. Get Balances
-        aevo_bal_row = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO' AND strategy = ?", (strategy,)).fetchone()
-        deri_bal_row = conn.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE' AND strategy = ?", (strategy,)).fetchone()
-        aevo_bal = aevo_bal_row[0] if aevo_bal_row else 50.0
-        deri_bal = deri_bal_row[0] if deri_bal_row else 50.0
-        
-        # 2. Get Open Trades
-        open_trades_raw = conn.execute("SELECT * FROM open_trades WHERE status = 'OPEN' AND strategy = ? ORDER BY timestamp DESC", (strategy,)).fetchall()
-        open_trades = [dict(r) for r in open_trades_raw]
-        
-        if open_trades:
-            latest_time = conn.execute("SELECT MAX(timestamp) FROM options_data").fetchone()[0]
-            latest_data = pd.read_sql_query(f"SELECT exchange, expiry, strike, option_type, ask_1, bid_1 FROM options_data WHERE timestamp = '{latest_time}'", conn)
-            latest_data['mid'] = (latest_data['ask_1'] + latest_data['bid_1']) / 2
-            merged = latest_data.pivot_table(index=['expiry', 'option_type', 'strike'], columns='exchange', values='mid').reset_index()
-            
-            for trade in open_trades:
-                trade['floating_pnl'] = 0.0
-                trade['current_gap'] = 0.0
-                mask = (merged['expiry'] == trade['expiry']) & (merged['option_type'] == trade['opt_type']) & (merged['strike'] == trade['strike'])
-                if mask.any():
-                    row = merged[mask].iloc[0]
-                    if not pd.isna(row.get('AEVO')) and not pd.isna(row.get('DERIVE')):
-                        aevo_mid = row['AEVO']
-                        deri_mid = row['DERIVE']
-                        if strategy == 'H1':
-                            # Simple directional for H1 since we just bought/sold on Derive
-                            trade['current_gap'] = 0.0
-                            trade['floating_pnl'] = abs(deri_mid - trade['entry_deri_mid']) * trade['trade_size'] - 0.25
-                        else:
-                            current_gap = abs(aevo_mid - deri_mid)
-                            entry_gap = abs(trade['entry_aevo_mid'] - trade['entry_deri_mid'])
-                            trade['current_gap'] = current_gap
-                            trade['floating_pnl'] = (entry_gap - current_gap) * trade['trade_size']
-                            
-                # Format time
-                dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00'))
-                trade['time_str'] = dt.strftime('%H:%M:%S')
-                now = datetime.utcnow()
-                diff = now - dt.replace(tzinfo=None)
-                mins, secs = divmod(diff.total_seconds(), 60)
-                hours, mins = divmod(mins, 60)
-                trade['duration_str'] = f"{int(hours)}h {int(mins)}m" if hours > 0 else f"{int(mins)}m {int(secs)}s"
+    c = conn()
+    now = datetime.now(timezone.utc)
 
-        # 3. Get Closed Trades
-        closed_trades_raw = conn.execute("SELECT * FROM open_trades WHERE status = 'CLOSED' AND strategy = ? ORDER BY timestamp DESC LIMIT 20", (strategy,)).fetchall()
-        closed_trades = []
-        for r in closed_trades_raw:
-            trade = dict(r)
-            dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00'))
-            trade['time_str'] = dt.strftime('%H:%M:%S')
-            if trade.get('close_time'):
-                close_dt = datetime.fromisoformat(trade['close_time'].replace('Z', '+00:00'))
-                diff = close_dt - dt
-                mins, secs = divmod(diff.total_seconds(), 60)
-                hours, mins = divmod(mins, 60)
-                trade['duration_str'] = f"{int(hours)}h {int(mins)}m" if hours > 0 else f"{int(mins)}m {int(secs)}s"
-            else:
-                trade['duration_str'] = "-"
-            closed_trades.append(trade)
-            
-        total_balance = aevo_bal + deri_bal
-        floating_total = sum([t.get('floating_pnl', 0.0) for t in open_trades])
-        total_equity = total_balance + floating_total
-        
-        response_data[strategy] = {
-            "aevo_balance": aevo_bal,
-            "deri_balance": deri_bal,
-            "total_equity": total_equity,
-            "floating_pnl": floating_total,
-            "open_trades": open_trades,
-            "closed_trades": closed_trades
-        }
-        
-    conn.close()
-    return response_data
+    counts = {
+        "iv_snapshots": _scalar(c, "SELECT COUNT(*) FROM iv_snapshots", 0),
+        "bybit_flow": _scalar(c, "SELECT COUNT(*) FROM bybit_flow", 0),
+        "bybit_oi_strikes": _scalar(c, "SELECT COUNT(*) FROM bybit_oi_strikes", 0),
+    }
+
+    start_s = _scalar(c, "SELECT MIN(ts) FROM iv_snapshots")
+    last_s = _scalar(c, "SELECT MAX(ts) FROM iv_snapshots")
+    start, last = _iso(start_s), _iso(last_s)
+    cycles = _scalar(c, "SELECT COUNT(DISTINCT ts) FROM bybit_flow", 0)
+
+    elapsed_days = (now - start).total_seconds() / 86400.0 if start else 0.0
+    secs_since = (now - last).total_seconds() if last else None
+    live = secs_since is not None and secs_since < CYCLE_SEC * 2
+    expected_cycles = max(1, int((now - start).total_seconds() / CYCLE_SEC)) if start else 1
+    coverage = min(100.0, 100.0 * cycles / expected_cycles) if cycles else 0.0
+
+    # Hypotheses progress (data-readiness)
+    hyps = []
+    for hid, meta in HYP.items():
+        pct = min(100.0, 100.0 * elapsed_days / meta["target_days"]) if start else 0.0
+        eta = (start + timedelta(days=meta["target_days"])) if start else None
+        days_left = max(0.0, meta["target_days"] - elapsed_days)
+        hyps.append({
+            "id": hid, "name": meta["name"], "needs": meta["needs"],
+            "target_days": meta["target_days"], "progress_pct": round(pct, 1),
+            "eta": eta.strftime("%d %b %Y") if eta else None,
+            "days_left": round(days_left, 1),
+            "ready": pct >= 100.0,
+        })
+
+    # Latest market snapshot (DERIVE term structure + skew, BYBIT flow)
+    term = []
+    for ten in (7, 14, 30):
+        r = c.execute(
+            "SELECT atm_iv, rr_25, fly FROM iv_snapshots WHERE exchange='DERIVE' AND tenor_target=? "
+            "ORDER BY ts DESC LIMIT 1", (ten,)).fetchone()
+        if r:
+            term.append({"tenor": ten,
+                         "atm_iv": round(r["atm_iv"] * 100, 1) if r["atm_iv"] is not None else None,
+                         "rr": round(r["rr_25"] * 100, 1) if r["rr_25"] is not None else None,
+                         "fly": round(r["fly"] * 100, 1) if r["fly"] is not None else None})
+
+    rv = _scalar(c, "SELECT rv_trailing_24h FROM iv_snapshots WHERE exchange='DERIVE' "
+                    "AND rv_trailing_24h IS NOT NULL ORDER BY ts DESC LIMIT 1")
+    iv14 = next((t["atm_iv"] for t in term if t["tenor"] == 14), None)
+    vrp = round(iv14 - rv * 100, 1) if (rv is not None and iv14 is not None) else None
+
+    bf = c.execute("SELECT spot,total_oi,pcr_oi,book_imb,atm_iv FROM bybit_flow "
+                   "ORDER BY ts DESC LIMIT 1").fetchone()
+    bybit = dict(bf) if bf else {}
+
+    c.close()
+    return {
+        "live": live, "last_update": last_s, "secs_since": secs_since,
+        "collection": {"start": start_s, "elapsed_days": round(elapsed_days, 2),
+                       "cycles": cycles, "expected_cycles": expected_cycles,
+                       "coverage_pct": round(coverage, 1), "cycle_min": CYCLE_SEC // 60},
+        "counts": counts,
+        "hypotheses": hyps,
+        "market": {
+            "spot": round(bybit.get("spot"), 1) if bybit.get("spot") else None,
+            "term": term,
+            "rv_24h": round(rv * 100, 1) if rv is not None else None,
+            "vrp": vrp,
+            "bybit": {
+                "total_oi": round(bybit["total_oi"]) if bybit.get("total_oi") else None,
+                "pcr_oi": round(bybit["pcr_oi"], 2) if bybit.get("pcr_oi") else None,
+                "book_imb": round(bybit["book_imb"], 3) if bybit.get("book_imb") is not None else None,
+                "atm_iv": round(bybit["atm_iv"] * 100, 1) if bybit.get("atm_iv") else None,
+            },
+        },
+    }

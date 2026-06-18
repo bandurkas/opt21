@@ -3,89 +3,81 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Paper Trading Dashboard</title>
+    <title>opt21 · Data Collection Report</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="dashboard-container">
         <header class="dashboard-header">
-            <h1>Paper Trading Dashboard</h1>
-            <div class="tabs-container">
-                <button class="tab-btn active" data-target="H7">H7: Maker Arbitrage</button>
-                <button class="tab-btn" data-target="H3">H3: Micro-Reversion</button>
+            <div>
+                <h1>opt21 · Data Collection Report</h1>
+                <p class="subtitle">Phase 1 — accumulating data to validate two hypotheses. No trading.</p>
             </div>
-            <div class="total-equity-card glass-card">
-                <span class="label">Total Equity</span>
-                <span class="value" id="total_equity">$0.00</span>
+            <div class="status-pill" id="status_pill">
+                <span class="dot"></span><span id="status_text">…</span>
             </div>
         </header>
 
+        <!-- Collection stat cards -->
         <section class="balances-section">
             <div class="balance-card glass-card">
-                <div class="exchange-logo">A</div>
+                <div class="exchange-logo">⏱</div>
                 <div class="balance-info">
-                    <span class="label">Aevo Balance</span>
-                    <span class="value" id="aevo_balance">$0.00</span>
+                    <span class="label">Collecting for</span>
+                    <span class="value" id="elapsed">—</span>
                 </div>
             </div>
             <div class="balance-card glass-card">
-                <div class="exchange-logo">D</div>
+                <div class="exchange-logo">↻</div>
                 <div class="balance-info">
-                    <span class="label">Derive Balance</span>
-                    <span class="value" id="deri_balance">$0.00</span>
+                    <span class="label">Cycles captured (10 min)</span>
+                    <span class="value" id="cycles">—</span>
                 </div>
             </div>
-            <div class="balance-card glass-card highlight">
-                <div class="exchange-logo">P</div>
+            <div class="balance-card glass-card">
+                <div class="exchange-logo">✓</div>
                 <div class="balance-info">
-                    <span class="label">Floating PnL</span>
-                    <span class="value" id="floating_pnl">$0.00</span>
+                    <span class="label">Capture coverage</span>
+                    <span class="value" id="coverage">—</span>
+                </div>
+            </div>
+            <div class="balance-card glass-card">
+                <div class="exchange-logo">Σ</div>
+                <div class="balance-info">
+                    <span class="label">Data points stored</span>
+                    <span class="value" id="datapoints">—</span>
                 </div>
             </div>
         </section>
 
+        <!-- Hypothesis validation progress -->
         <section class="tables-section">
             <div class="table-container glass-card">
-                <h2>Active Positions</h2>
-                <table id="open_trades_table">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Time</th>
-                            <th>Duration</th>
-                            <th>Pair</th>
-                            <th>Size</th>
-                            <th>Entry Gap</th>
-                            <th>Current Gap</th>
-                            <th>Floating PnL</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- Rows injected by JS -->
-                    </tbody>
-                </table>
+                <h2>Hypothesis Readiness — progress to 100%</h2>
+                <div id="hyp_list"></div>
             </div>
 
+            <!-- Live market snapshot -->
             <div class="table-container glass-card">
-                <h2>Trade History</h2>
-                <table id="closed_trades_table">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Time closed</th>
-                            <th>Duration</th>
-                            <th>Pair</th>
-                            <th>Size</th>
-                            <th>Realized PnL</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- Rows injected by JS -->
-                    </tbody>
+                <h2>Latest Market Snapshot</h2>
+                <div class="snapshot-grid">
+                    <div class="snap"><span class="label">ETH Spot</span><span class="value" id="spot">—</span></div>
+                    <div class="snap"><span class="label">RV 24h (realized)</span><span class="value" id="rv">—</span></div>
+                    <div class="snap"><span class="label">VRP (14d IV − RV)</span><span class="value" id="vrp">—</span></div>
+                    <div class="snap"><span class="label">BYBIT Total OI</span><span class="value" id="oi">—</span></div>
+                    <div class="snap"><span class="label">Put/Call OI</span><span class="value" id="pcr">—</span></div>
+                    <div class="snap"><span class="label">Book Imbalance</span><span class="value" id="imb">—</span></div>
+                </div>
+                <h3 class="sub-h">DERIVE IV Term Structure & Skew</h3>
+                <table id="term_table">
+                    <thead><tr><th>Tenor</th><th>ATM IV</th><th>Risk Reversal (skew)</th><th>Butterfly</th></tr></thead>
+                    <tbody></tbody>
                 </table>
             </div>
         </section>
+
+        <footer class="foot" id="foot">—</footer>
     </div>
 
     <script src="/static/app.js"></script>

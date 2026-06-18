@@ -28,19 +28,14 @@ def check_h3_signals():
         df['dte'] = (df['expiry_utc'] - df['timestamp_utc']).dt.total_seconds() / 86400.0
         df = df[df['dte'] < 30]
         
-        # Add moneyness before pivot
-        def get_money(opt, m):
-            if opt == 'C':
-                return 'ITM' if m < 0.95 else 'OTM' if m > 1.05 else 'ATM'
-            else:
-                return 'ITM' if m > 1.05 else 'OTM' if m < 0.95 else 'ATM'
-                
-        df['moneyness_cat'] = [get_money(row.option_type, row.strike / row.underlying_price) for _, row in df.iterrows()]
+        df['moneyness'] = df['strike'] / df['underlying_price']
+        df['m_dist'] = (df['moneyness'] - 1.0).abs()
         
-        # Filter out bad OTM spreads (> 30%)
-        df = df[~((df['moneyness_cat'] == 'OTM') & (df['spread_pct'] > 0.30))]
+        # Filter out bad OTM spreads (> 30%) and enforce M_DIST <= 0.15
+        df = df[~((df['m_dist'] > 0.05) & (df['spread_pct'] > 0.30))]
+        df = df[df['m_dist'] <= 0.15]
         
-        merged = df.pivot_table(index=['expiry', 'option_type', 'strike', 'dte', 'moneyness_cat'], columns='exchange', values='mid').reset_index()
+        merged = df.pivot_table(index=['expiry', 'option_type', 'strike', 'dte', 'm_dist'], columns='exchange', values='mid').reset_index()
         
         if merged.empty:
             conn.close()
@@ -57,8 +52,7 @@ def check_h3_signals():
                 temp_diff = (merged[ex1] - merged[ex2]).abs()
                 mask = (
                     (temp_diff >= 10.0) &
-                    (merged['moneyness_cat'] != 'ITM') &
-                    ((merged['dte'] < 3) | (temp_diff >= 20.0)) &
+                    (merged['dte'] >= 0.5) &
                     merged[ex1].notna() & merged[ex2].notna()
                 )
                 

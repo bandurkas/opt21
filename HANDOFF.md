@@ -1,86 +1,60 @@
-# Project Handoff: Lucid Maxwell (Options Arbitrage Bots)
+# Project Handoff: opt21 — Crypto Options Edge Research
 
-## Обзор Проекта
-Проект представляет собой пакет торговых ботов и аналитических скриптов для автоматического сбора данных и бумажной торговли (Paper Trading) криптовалютными опционами на ETH между биржами **Aevo**, **Derive (Lyra)** и **Bybit** (3-way arbitrage).
+## What this project is now
+A **data-measurement platform** for ETH options across **AEVO**, **Derive (Lyra)** and **Bybit**,
+plus offline research to find a *real* edge. Deployed on VPS `168.231.118.173` at `/root/opt21/`,
+Dockerized, SQLite (`data.sqlite`).
 
-Система развернута на удаленном VPS (IP: `168.231.118.173`, директория `/root/opt21/`), упакована в Docker и использует локальную базу данных SQLite (`data.sqlite`) для сохранения котировок, логов и состояния симулируемых торговых аккаунтов.
+## History & the pivot (2026-06-18)
+The project began as cross-venue **arbitrage** bots (H3 taker mid-reversion, H7 maker spread-capture).
+Rigorous backtests on the collected data **rejected both**:
+- **No static arbitrage exists.** Matched ATM IV ratio AEVO/DERIVE = **1.00**; put-call parity holds
+  within spread (<1% of pairs have |dev| > spread cost). The venues agree on fair value.
+- **H7** (maker): realistic exit (crossing the >$20 spread that is the entry condition) → **−$2.28/trade,
+  14% win**. Advertised "profit" was ~3× the theoretical max.
+- **H3** (taker): sum of both legs' spreads (~$57) is ~3× the entry mid-gap (~$19) → **100% of signals
+  lose even on perfect convergence**; realistic −$1.02/trade, 0% win.
+- Both bots had **0 realized trades** in production. All arb code removed; bots stopped & deleted.
 
----
+Root cause: the cross-venue "gap" is an artifact of wide, illiquid spreads (mostly AEVO top-of-book);
+the spread you must cross to trade it always exceeds the gap. Not fixable by tuning.
 
-## Архитектура и Компоненты
+## Current components
+- **`collector.py`** — raw ingestion. Polls Aevo/Derive/Bybit REST every 60s into `options_data`
+  (Bybit via `GET /v5/market/tickers?category=option&baseCoin=ETH`). Container `options-collector`.
+- **`analytics_collector.py`** — derived-feature logger, every **600s**. Reads an *aligned* snapshot
+  (window = last 90s, latest per (exchange,contract); exact-`MAX(timestamp)` would see only one venue).
+  Writes compact, append-only tables that survive a **14-day** `options_data` prune. Container
+  `options-analytics` (reuses the collector image; code mounted, no rebuild needed).
+- **`dashboard/`** — FastAPI dashboard (`:8080`). Still shows legacy arb tables; **to be repurposed**
+  in Phase 2 to display VRP/skew/flow. Container `options-dashboard`.
 
-### 1. `collector.py` (Сборщик данных)
-- **Биржи**: Aevo (REST API), Derive (REST API) и Bybit (REST API).
-- **Bybit REST**: Используется эндпоинт `GET /v5/market/tickers?category=option&baseCoin=ETH`. Вебсокеты для Bybit были удалены из-за ограничений на получение полных моментальных снимков рынка (snapshots).
-- **Парсинг символов Bybit**: Учитывает приписку `-USDT` (например, `ETH-25SEP26-4800-C-USDT`). Использует гибкую фильтрацию (`len(parts) < 4`), чтобы разделять символ на DTE, Strike и Option Type.
-- **Интервал**: Каждые 60 секунд.
-- **БД**: Сбрасывает данные в таблицу `options_data` (с полями `bid_1`, `ask_1`, `mark_price`, `underlying_price`, `strike`, `expiry`, `option_type` и т.д.).
+### Analytics tables (`analytics_schema.sql`)
+- `iv_snapshots` — per (ts, exchange, tenor∈{7,14,30}): spot, dte_actual, atm_iv, put/call wing IVs,
+  `rr_25` (risk reversal), `fly` (butterfly), `rv_trailing_24h`, n_contracts.
+- `bybit_flow` — per cycle: total/put/call OI & volume, PCR, atm_iv, `book_imb` (near-money L1 imbalance).
+- `bybit_oi_strikes` — near-money (|m-1|≤0.25) per-strike OI/volume/iv.
 
-### 2. `h3_bot.py` (H3: Micro-Reversion Scalper)
-- **Тип стратегии**: Taker-стратегия на схождение микро-разрывов. Ищет разницы в средних ценах (mid-price) между тремя биржами.
-- **Гипер-фильтры (после оптимизации от 18 июня 2026)**:
-  - Минимальный спред между биржами (`GAP`): **>= $10.0** (вычислен сеткой параметров как золотая середина по доходности).
-  - Срок до экспирации (`DTE`): **>= 0.5 дня** (избегаем опционов текущего дня с высокой погрешностью).
-  - Расстояние до денег (`M_DIST` / Moneyness Distance): **<= 0.15** (ограничиваемся ликвидным диапазоном около денег).
-- **Логика работы**:
-  - При возникновении разрыва свыше $10 покупает на дешевой бирже и продает на дорогой.
-  - Позиции удерживаются до схлопывания спреда до <= $2.0, либо закрываются принудительно по тайм-ауту 15 минут.
-  - Состояние балансов и позиций пишется в таблицы `paper_accounts` и `open_trades` (в поле `strategy = 'H3'`).
+## Two hypotheses under measurement (Phase 1 = collect data; NO trading)
+- **A — Variance Risk Premium:** is IV systematically richer than subsequently-realized vol?
+  NOTE: the initial 16h window showed **negative** VRP (RV~61% noise-robust > IV~49%), so this MUST be
+  measured over weeks before any trade. Bonus signal found: ETH carries real **put skew** (RR<0).
+- **C — BYBIT order flow → short-term vol/direction:** Bybit is the only venue with real volume/OI/depth.
+  Do OI build-ups / volume bursts / book imbalance predict forward returns or IV moves?
 
-### 3. `radar_bot.py` (H7: Maker Arbitrage & Telegram Alerting)
-- **Тип стратегии**: Maker-стратегия. Выставляет виртуальные лимитные заявки на покупку/продажу внутрь широких спредов и ожидает исполнения рыночными игроками.
-- **Схема закрытия**:
-  - Сделка считается успешной, если спред сошелся и виртуальные лимитки исполнились (таблица `open_trades` переходит в `CLOSED`).
-  - Если сделка не исполнилась в течение **8 часов**, срабатывает жесткий тайм-аут: сделка принудительно отменяется для освобождения маржи.
-- **Уведомления**: Шлет детализированные сигналы на вход и выход в Telegram-чат админам (конфиг `admins.json`).
+## Phase 2 (≈3–4 weeks out, once data accumulates)
+Offline backtests in a `backtest/` module: regress forward-RV on IV (A); label flow features with
+forward returns/IV at {30m,1h,4h} and test OOS (C). Build a strategy **only if an edge survives holdout**.
+Then live trading per DEVELOPMENT_FLOW.
 
-### 4. Мониторинг здоровья (Health Check)
-- На локальной машине агента настроена периодическая cron-задача (`0 */12 * * *`), которая каждые 12 часов будит AI-агента.
-- **Действия проверки**:
-  - Подключение по SSH к VPS.
-  - Проверка работы всех 4 контейнеров через `docker ps`.
-  - Валидация свежести данных в `data.sqlite` (проверка даты последней записи).
+## Ops
+- Build images **on the developer machine if heavy** — VPS is 1-CPU x86, 3.8 GB RAM. The analytics
+  service deliberately reuses `opt21-collector:latest` with code mounted to avoid VPS rebuilds.
+- Health: `docker ps` (collector, analytics, dashboard should be Up); freshness = `MAX(ts)` in
+  `iv_snapshots` advancing every ~10 min.
+- Local diagnostics (`bt_h7.py`, `bt_h3.py`, `explore_edges.py`, `rv_check.py`, `probe_tenors.py`) are
+  kept out of git intentionally; they reproduce the rejection analyses.
 
----
-
-## Структура Репозитория
-
-- `collector.py` — Скрипт периодического парсинга бирж.
-- `h3_bot.py` — Бот Taker-арбитража.
-- `radar_bot.py` — Бот Maker-арбитража и Telegram-оповещений.
-- `optimize_h3_params.py` — Скрипт бэктестинга и оптимизации сетки параметров для H3.
-- `optimize_h7_params.py` — Аналогичный оптимизатор параметров для H7.
-- `h3_simulation.py` — Быстрый локальный симулятор для прогона параметров H3.
-- `docker-compose.yml` — Описание сервисов на проде (`collector`, `radar`, `dashboard`, `h3-bot`).
-- `Dockerfile` — Единый образ для всех сервисов на базе `python:3.10-slim`.
-- `requirements.txt` — Python зависимости (`pandas`, `numpy`, `curl_cffi`, `aiosqlite`, `pyTelegramBotAPI`).
-- `admins.json` — Файл со списком ID админов Telegram (игнорируется в git или имеет пустой массив).
-
----
-
-## Процесс Разработки и Деплоя (Flow)
-Любой следующий агент **обязан** следовать строгому регламенту изменений:
-1. **План**: Создание/обновление `implementation_plan.md` с описанием архитектуры и лимитов.
-2. **Код**: Локальное написание правок.
-3. **Тест**: Прогон юнит-тестов или запуск симуляций на исторических данных (например, `optimize_h3_params.py` или тестовый скрипт).
-4. **Тест-ревью**: Отчет о результатах теста перед пользователем.
-5. **Деплой на VPS**:
-   - `git add` & `git commit` & `git push`
-   - Подключение по SSH на VPS.
-   - `git pull`
-   - Сборка: `docker compose build <service_name>`
-   - Запуск: `docker compose up -d <service_name>`
-6. **Верификация**: Проверка логов продакшена через `docker logs <container_name>`.
-7. **walkthrough**: Фиксация изменений в `walkthrough.md`.
-
----
-
-## Текущий Статус (на 18 июня 2026)
-- **Collector**: Запущен и собирает данные. Записи по Bybit (584 шт.), Derive (672 шт.), Aevo (772 шт.) стабильно оседают в БД.
-- **Radar (H7)**: Активен, виртуальные лимитки выставлены, ожидает филлов или тайм-аута в 8 часов.
-- **H3 Bot**: Запущен в докере, сканирует треугольники Aevo-Derive-Bybit по новым смягченным фильтрам ($10 gap).
-
-## Идеи для развития
-1. **Оптимизация БД**: Таблица `options_data` растет на ~2000 записей каждую минуту. Нужен скрипт ротации/архивации данных старше 7-14 дней, чтобы диск на VPS не переполнился.
-2. **Аналитика в Dashboard**: Настроить вывод истории сделок и графиков схождения спредов в приложении `dashboard/app.py`.
-3. **Реальный Taker-выкуп**: Перевод H3 бота с Paper-трейдинга на реальное API исполнение (при наличии балансов и API-ключей).
+## Flow (DEVELOPMENT_FLOW.md)
+architecture → code → review → test(backtest+holdout / unit) → review → deploy(commit/push/git pull on
+VPS) → verify(container Up, 0 errors) → sync local=GitHub=VPS + docs.

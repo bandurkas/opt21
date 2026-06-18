@@ -27,21 +27,56 @@ def check_h3_signals():
         df['dte'] = (df['expiry_utc'] - df['timestamp_utc']).dt.total_seconds() / 86400.0
         df = df[df['dte'] < 30]
         
-        merged = df.pivot_table(index=['expiry', 'option_type', 'strike'], columns='exchange', values='mid')
-        merged = merged.dropna(subset=['AEVO', 'DERIVE'])
+        # Add moneyness before pivot
+        def get_money(opt, m):
+            if opt == 'C':
+                return 'ITM' if m < 0.95 else 'OTM' if m > 1.05 else 'ATM'
+            else:
+                return 'ITM' if m > 1.05 else 'OTM' if m < 0.95 else 'ATM'
+                
+        df['moneyness_cat'] = [get_money(row.option_type, row.strike / row.underlying_price) for _, row in df.iterrows()]
+        
+        merged = df.pivot_table(index=['expiry', 'option_type', 'strike', 'dte', 'moneyness_cat'], columns='exchange', values='mid').reset_index()
         
         if merged.empty:
             conn.close()
             return
             
-        merged['diff_abs'] = (merged['AEVO'] - merged['DERIVE']).abs()
+        exchanges = [col for col in ['AEVO', 'DERIVE', 'BYBIT'] if col in merged.columns]
+        opportunities = []
         
-        # Look for price divergence >= 10.0
-        opportunities = merged[merged['diff_abs'] >= 10.0]
+        for i in range(len(exchanges)):
+            for j in range(i+1, len(exchanges)):
+                ex1 = exchanges[i]
+                ex2 = exchanges[j]
+                
+                temp_diff = (merged[ex1] - merged[ex2]).abs()
+                mask = (
+                    (temp_diff >= 15.0) &
+                    (merged['moneyness_cat'] != 'ITM') &
+                    ((merged['dte'] < 3) | (temp_diff >= 20.0)) &
+                    merged[ex1].notna() & merged[ex2].notna()
+                )
+                
+                for _, row in merged[mask].iterrows():
+                    opportunities.append({
+                        'expiry': row['expiry'],
+                        'option_type': row['option_type'],
+                        'strike': row['strike'],
+                        'ex1': ex1,
+                        'ex2': ex2,
+                        'mid1': row[ex1],
+                        'mid2': row[ex2],
+                        'gap': temp_diff.loc[_]
+                    })
         
         cursor = conn.cursor()
-        for idx, row in opportunities.iterrows():
-            expiry, opt_type, strike = idx
+        for opp in opportunities:
+            expiry = opp['expiry']
+            opt_type = opp['option_type']
+            strike = opp['strike']
+            ex1 = opp['ex1']
+            ex2 = opp['ex2']
             pair = f"ETH-{expiry.split(' ')[0]}-{strike}-{opt_type}"
             
             # Check if already open
@@ -53,21 +88,18 @@ def check_h3_signals():
             open_count = cursor.execute("SELECT COUNT(*) FROM open_trades WHERE status = 'OPEN' AND strategy = 'H3'").fetchone()[0]
             total_locked_margin = open_count * MARGIN_REQUIRED_PER_TRADE
             
-            aevo_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO' AND strategy = 'H3'").fetchone()[0]
-            deri_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE' AND strategy = 'H3'").fetchone()[0]
+            bal1 = cursor.execute(f"SELECT balance FROM paper_accounts WHERE exchange = '{ex1}' AND strategy = 'H3'").fetchone()[0]
+            bal2 = cursor.execute(f"SELECT balance FROM paper_accounts WHERE exchange = '{ex2}' AND strategy = 'H3'").fetchone()[0]
             
-            if (aevo_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE or (deri_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE:
+            if (bal1 - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE or (bal2 - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE:
                 continue
                 
-            # Enter trade
-            aevo_mid = row['AEVO']
-            deri_mid = row['DERIVE']
             cursor.execute('''
             INSERT INTO open_trades (strategy, expiry, strike, opt_type, pair, wide_exchange, tight_exchange, entry_aevo_mid, entry_deri_mid, trade_size, status)
-            VALUES ('H3', ?, ?, ?, ?, 'AEVO', 'DERIVE', ?, ?, ?, 'OPEN')
-            ''', (expiry, strike, opt_type, pair, aevo_mid, deri_mid, TRADE_SIZE))
+            VALUES ('H3', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+            ''', (expiry, strike, opt_type, pair, ex1, ex2, opp['mid1'], opp['mid2'], TRADE_SIZE))
             conn.commit()
-            print(f"H3 Signal triggered on {pair} (Gap: ${row['diff_abs']:.2f})")
+            print(f"H3 Signal triggered on {pair} between {ex1} and {ex2} (Gap: ${opp['gap']:.2f})")
             
         conn.close()
     except Exception as e:
@@ -88,36 +120,45 @@ def check_h3_unwinds():
         merged = df.pivot_table(index=['expiry', 'option_type', 'strike'], columns='exchange', values='mid')
         
         for _, trade in open_trades.iterrows():
+            dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
+            duration_mins = (datetime.utcnow() - dt).total_seconds() / 60.0
+            
+            close_trade = False
+            actual_pnl = 0.0
+            
             try:
                 row = merged.loc[(trade['expiry'], trade['opt_type'], trade['strike'])]
-                if pd.isna(row.get('AEVO')) or pd.isna(row.get('DERIVE')):
-                    continue
+                ex1 = trade['wide_exchange']
+                ex2 = trade['tight_exchange']
+                
+                if pd.isna(row.get(ex1)) or pd.isna(row.get(ex2)):
+                    # Data missing right now, but check if we need to force close due to timeout
+                    if duration_mins >= 15:
+                        close_trade = True
+                        actual_pnl = 0.0 # Force close as scratch if missing data
+                else:
+                    current_mid1 = row[ex1]
+                    current_mid2 = row[ex2]
                     
-                current_aevo_mid = row['AEVO']
-                current_deri_mid = row['DERIVE']
-                
-                entry_gap = abs(trade['entry_aevo_mid'] - trade['entry_deri_mid'])
-                current_gap = abs(current_aevo_mid - current_deri_mid)
-                actual_pnl = (entry_gap - current_gap) * trade['trade_size']
-                
-                dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
-                duration_mins = (datetime.utcnow() - dt).total_seconds() / 60.0
-                
-                close_trade = False
-                if current_gap <= 2.0:
-                    close_trade = True
-                elif duration_mins >= 15:
-                    close_trade = True
+                    entry_gap = abs(trade['entry_aevo_mid'] - trade['entry_deri_mid'])
+                    current_gap = abs(current_mid1 - current_mid2)
+                    actual_pnl = (entry_gap - current_gap) * trade['trade_size']
                     
-                if close_trade:
-                    conn.execute(f"UPDATE open_trades SET status = 'CLOSED', actual_pnl = {actual_pnl}, close_time = CURRENT_TIMESTAMP WHERE trade_id = {trade['trade_id']}")
-                    half_pnl = actual_pnl / 2.0
-                    conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'AEVO' AND strategy = 'H3'")
-                    conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'DERIVE' AND strategy = 'H3'")
-                    conn.commit()
-                    print(f"H3 Trade {trade['trade_id']} closed with PnL ${actual_pnl:.2f} (Duration: {duration_mins:.1f}m)")
+                    if current_gap <= 2.0 or duration_mins >= 15:
+                        close_trade = True
             except KeyError:
-                continue
+                # Option not found in current data (expired/delisted)
+                if duration_mins >= 15:
+                    close_trade = True
+                    actual_pnl = 0.0
+                    
+            if close_trade:
+                conn.execute(f"UPDATE open_trades SET status = 'CLOSED', actual_pnl = {actual_pnl}, close_time = CURRENT_TIMESTAMP WHERE trade_id = {trade['trade_id']}")
+                half_pnl = actual_pnl / 2.0
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = '{trade['wide_exchange']}' AND strategy = 'H3'")
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = '{trade['tight_exchange']}' AND strategy = 'H3'")
+                conn.commit()
+                print(f"H3 Trade {trade['trade_id']} closed with PnL ${actual_pnl:.2f} (Duration: {duration_mins:.1f}m)")
                 
         conn.close()
     except Exception as e:

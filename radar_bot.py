@@ -54,12 +54,9 @@ def init_db():
     )
     ''')
     
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM paper_accounts")
-    if cursor.fetchone()[0] == 0:
-        for strat in ['H7', 'H1', 'H2']:
-            cursor.execute("INSERT INTO paper_accounts (strategy, exchange, balance) VALUES (?, 'AEVO', 50.0)", (strat,))
-            cursor.execute("INSERT INTO paper_accounts (strategy, exchange, balance) VALUES (?, 'DERIVE', 50.0)", (strat,))
+    # Ensure BYBIT exists
+    conn.execute("INSERT OR IGNORE INTO paper_accounts (strategy, exchange, balance) VALUES ('H7', 'BYBIT', 50.0)")
+    conn.execute("INSERT OR IGNORE INTO paper_accounts (strategy, exchange, balance) VALUES ('H3', 'BYBIT', 50.0)")
         
     conn.commit()
     conn.close()
@@ -83,7 +80,7 @@ def get_h7_opportunities():
         SELECT timestamp, exchange, symbol, strike, expiry, option_type, 
                mark_price, bid_1, ask_1, underlying_price
         FROM options_data
-        WHERE exchange IN ('DERIVE', 'AEVO')
+        WHERE exchange IN ('DERIVE', 'AEVO', 'BYBIT')
         """
         df = pd.read_sql_query(query, conn)
         conn.close()
@@ -123,71 +120,84 @@ def get_h7_opportunities():
             index=['expiry', 'option_type', 'strike'], 
             columns='exchange', 
             values=['mid_price', 'spread', 'bid_1', 'ask_1']
-        )
-        merged = merged.dropna(subset=[('mid_price', 'AEVO'), ('mid_price', 'DERIVE')])
+        ).reset_index()
         
         opportunities = []
+        exchanges = [col for col in ['AEVO', 'DERIVE', 'BYBIT'] if ('mid_price', col) in merged.columns]
+        
         for idx, row in merged.iterrows():
-            expiry, opt_type, strike = idx
+            expiry = row['expiry'].iloc[0] if isinstance(row['expiry'], pd.Series) else row['expiry']
+            if isinstance(expiry, tuple): expiry = expiry[0]
+            opt_type = row['option_type'].iloc[0] if isinstance(row['option_type'], pd.Series) else row['option_type']
+            if isinstance(opt_type, tuple): opt_type = opt_type[0]
+            strike = row['strike'].iloc[0] if isinstance(row['strike'], pd.Series) else row['strike']
+            if isinstance(strike, tuple): strike = strike[0]
             
-            # Parse expiry date correctly
             try:
                 dt = pd.to_datetime(expiry)
-                pretty_expiry = dt.strftime("%d %b %y") # '18 Jun 26'
-                raw_expiry = dt.strftime("%d%b%y").upper() # '18JUN26'
+                pretty_expiry = dt.strftime("%d %b %y")
+                raw_expiry = dt.strftime("%d%b%y").upper()
             except:
                 pretty_expiry = str(expiry)
                 raw_expiry = str(expiry)
             
-            aevo_bid, aevo_ask = row['bid_1']['AEVO'], row['ask_1']['AEVO']
-            deri_bid, deri_ask = row['bid_1']['DERIVE'], row['ask_1']['DERIVE']
-            aevo_mid, deri_mid = row['mid_price']['AEVO'], row['mid_price']['DERIVE']
-            aevo_spread, deri_spread = row['spread']['AEVO'], row['spread']['DERIVE']
-            
-            # Check Derive Wide / Aevo Tight
-            if deri_spread > aevo_spread * 2 and deri_spread > 5.0:
-                if aevo_mid > deri_bid and aevo_mid < deri_ask:
-                    edge = min(abs(deri_mid - aevo_mid), (deri_ask - aevo_mid), (aevo_mid - deri_bid))
-                    if edge > 20: # $20 Threshold
-                        opportunities.append({
-                            'type': 'MAKER_ARB',
-                            'wide_exchange': 'Derive (Lyra)',
-                            'tight_exchange': 'Aevo',
-                            'expiry_iso': expiry,
-                            'pretty_expiry': pretty_expiry,
-                            'raw_expiry': raw_expiry,
-                            'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
-                            'strike': strike,
-                            'opt_type': opt_type,
-                            'edge': edge,
-                            'action': f"Выставить BUY Limit внутри спреда на Derive (~${aevo_mid-1})",
-                            'fair_price': aevo_mid,
-                            'entry_aevo_mid': aevo_mid,
-                            'entry_deri_mid': deri_mid
-                        })
-            
-            # Check Aevo Wide / Derive Tight
-            if aevo_spread > deri_spread * 2 and aevo_spread > 5.0:
-                if deri_mid > aevo_bid and deri_mid < aevo_ask:
-                    edge = min(abs(aevo_mid - deri_mid), (aevo_ask - deri_mid), (deri_mid - aevo_bid))
-                    if edge > 20:
-                        opportunities.append({
-                            'type': 'MAKER_ARB',
-                            'wide_exchange': 'Aevo',
-                            'tight_exchange': 'Derive (Lyra)',
-                            'expiry_iso': expiry,
-                            'pretty_expiry': pretty_expiry,
-                            'raw_expiry': raw_expiry,
-                            'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
-                            'strike': strike,
-                            'opt_type': opt_type,
-                            'edge': edge,
-                            'action': f"Выставить BUY Limit внутри спреда на Aevo (~${deri_mid-1})",
-                            'fair_price': deri_mid,
-                            'entry_aevo_mid': aevo_mid,
-                            'entry_deri_mid': deri_mid
-                        })
+            for i in range(len(exchanges)):
+                for j in range(i+1, len(exchanges)):
+                    ex1 = exchanges[i]
+                    ex2 = exchanges[j]
+                    
+                    if pd.isna(row['mid_price'].get(ex1)) or pd.isna(row['mid_price'].get(ex2)):
+                        continue
                         
+                    bid1, ask1 = row['bid_1'][ex1], row['ask_1'][ex1]
+                    bid2, ask2 = row['bid_1'][ex2], row['ask_1'][ex2]
+                    mid1, mid2 = row['mid_price'][ex1], row['mid_price'][ex2]
+                    spread1, spread2 = row['spread'][ex1], row['spread'][ex2]
+                    
+                    # Check ex1 Wide / ex2 Tight
+                    if spread1 > spread2 * 2 and spread1 > 5.0:
+                        if mid2 > bid1 and mid2 < ask1:
+                            edge = min(abs(mid2 - mid1), (ask1 - mid2), (mid2 - bid1))
+                            if edge > 20:
+                                opportunities.append({
+                                    'type': 'MAKER_ARB',
+                                    'wide_exchange': ex1,
+                                    'tight_exchange': ex2,
+                                    'expiry_iso': str(expiry),
+                                    'pretty_expiry': pretty_expiry,
+                                    'raw_expiry': raw_expiry,
+                                    'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
+                                    'strike': strike,
+                                    'opt_type': opt_type,
+                                    'edge': edge,
+                                    'action': f"Выставить BUY Limit внутри спреда на {ex1} (~${mid2-1})",
+                                    'fair_price': mid2,
+                                    'entry_aevo_mid': mid1, # Store as mid1 and mid2 for generic use
+                                    'entry_deri_mid': mid2
+                                })
+                                
+                    # Check ex2 Wide / ex1 Tight
+                    if spread2 > spread1 * 2 and spread2 > 5.0:
+                        if mid1 > bid2 and mid1 < ask2:
+                            edge = min(abs(mid1 - mid2), (ask2 - mid1), (mid1 - bid2))
+                            if edge > 20:
+                                opportunities.append({
+                                    'type': 'MAKER_ARB',
+                                    'wide_exchange': ex2,
+                                    'tight_exchange': ex1,
+                                    'expiry_iso': str(expiry),
+                                    'pretty_expiry': pretty_expiry,
+                                    'raw_expiry': raw_expiry,
+                                    'pair': f"ETH-{raw_expiry}-{strike}-{opt_type}",
+                                    'strike': strike,
+                                    'opt_type': opt_type,
+                                    'edge': edge,
+                                    'action': f"Выставить BUY Limit внутри спреда на {ex2} (~${mid1-1})",
+                                    'fair_price': mid1,
+                                    'entry_aevo_mid': mid2,
+                                    'entry_deri_mid': mid1
+                                })
+                                
         return opportunities
     except Exception as e:
         print(f"Error checking H7: {e}")
@@ -223,16 +233,20 @@ def check_unwind_signals():
         
         for _, trade in open_trades.iterrows():
             trade_id = trade['trade_id']
+            # handle MultiIndex flattening issue depending on pivot format
             mask = (merged['expiry'] == trade['expiry']) & (merged['option_type'] == trade['opt_type']) & (merged['strike'] == trade['strike'])
             if not mask.any(): continue
             
             row = merged[mask].iloc[0]
-            if pd.isna(row.get('AEVO')) or pd.isna(row.get('DERIVE')): continue
+            ex1 = trade['wide_exchange']
+            ex2 = trade['tight_exchange']
             
-            aevo_mid = row['AEVO']
-            deri_mid = row['DERIVE']
+            if pd.isna(row.get(ex1)) or pd.isna(row.get(ex2)): continue
             
-            current_gap = abs(aevo_mid - deri_mid)
+            mid1 = row[ex1]
+            mid2 = row[ex2]
+            
+            current_gap = abs(mid1 - mid2)
             actual_pnl = (abs(trade['entry_aevo_mid'] - trade['entry_deri_mid']) - current_gap) * trade['trade_size']
             
             dt = datetime.fromisoformat(trade['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
@@ -252,8 +266,8 @@ def check_unwind_signals():
                 unwinds.append({
                     'trade_id': trade_id,
                     'pair': trade['pair'],
-                    'wide_exchange': trade['wide_exchange'],
-                    'tight_exchange': trade['tight_exchange'],
+                    'wide_exchange': ex1,
+                    'tight_exchange': ex2,
                     'actual_pnl': actual_pnl,
                     'reason': close_reason
                 })
@@ -261,8 +275,8 @@ def check_unwind_signals():
                 
                 # Split profit evenly between the two exchanges
                 half_pnl = actual_pnl / 2.0
-                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'AEVO' AND strategy = 'H7'")
-                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = 'DERIVE' AND strategy = 'H7'")
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = '{ex1}' AND strategy = 'H7'")
+                conn.execute(f"UPDATE paper_accounts SET balance = balance + {half_pnl} WHERE exchange = '{ex2}' AND strategy = 'H7'")
                 conn.commit()
                 
         conn.close()
@@ -295,10 +309,10 @@ def background_radar_loop():
                         MARGIN_REQUIRED_PER_TRADE = 18.0
                         total_locked_margin = open_count * MARGIN_REQUIRED_PER_TRADE
                         
-                        aevo_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'AEVO' AND strategy = 'H7'").fetchone()[0]
-                        deri_bal = cursor.execute("SELECT balance FROM paper_accounts WHERE exchange = 'DERIVE' AND strategy = 'H7'").fetchone()[0]
+                        bal1 = cursor.execute(f"SELECT balance FROM paper_accounts WHERE exchange = '{opp['wide_exchange']}' AND strategy = 'H7'").fetchone()[0]
+                        bal2 = cursor.execute(f"SELECT balance FROM paper_accounts WHERE exchange = '{opp['tight_exchange']}' AND strategy = 'H7'").fetchone()[0]
                         
-                        if (aevo_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE or (deri_bal - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE:
+                        if (bal1 - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE or (bal2 - total_locked_margin) < MARGIN_REQUIRED_PER_TRADE:
                             print(f"Skipping {sig_id} due to insufficient margin.")
                             conn.close()
                             continue

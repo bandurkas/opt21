@@ -1,4 +1,5 @@
 import asyncio
+import websockets
 from curl_cffi.requests import AsyncSession
 import aiosqlite
 import json
@@ -9,6 +10,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger('collector')
 
 DB_FILE = "data.sqlite"
+bybit_cache = {}
 
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
@@ -17,27 +19,32 @@ async def init_db():
         await db.executescript(schema)
         await db.commit()
 
-async def fetch_bybit_tickers(client):
-    url = "https://api.bybit.com/v5/market/tickers"
-    params = {"category": "option", "baseCoin": "ETH"}
-    try:
-        response = await client.get(url, params=params)
-        data = response.json()
-        return data.get('result', {}).get('list', [])
-    except Exception as e:
-        logger.error(f"Failed to fetch bybit tickers: {e}")
-        return []
-
-async def fetch_bybit_orderbook(client, symbol, limit=5):
-    url = "https://api.bybit.com/v5/market/orderbook"
-    params = {"category": "option", "symbol": symbol, "limit": limit}
-    try:
-        response = await client.get(url, params=params)
-        data = response.json()
-        return data.get('result', {})
-    except Exception as e:
-        logger.error(f"Failed to fetch orderbook for {symbol}: {e}")
-        return None
+async def bybit_websocket_listener():
+    url = "wss://stream.bybit.com/v5/public/option"
+    while True:
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                logger.info("Connected to Bybit WebSocket")
+                subscribe_msg = {"op": "subscribe", "args": ["tickers.ETH"]}
+                await ws.send(json.dumps(subscribe_msg))
+                
+                while True:
+                    response = await ws.recv()
+                    msg = json.loads(response)
+                    
+                    if 'data' in msg:
+                        data = msg['data']
+                        if isinstance(data, dict):
+                            data = [data]
+                        for item in data:
+                            symbol = item.get('symbol')
+                            if symbol:
+                                if symbol not in bybit_cache:
+                                    bybit_cache[symbol] = {}
+                                bybit_cache[symbol].update(item)
+        except Exception as e:
+            logger.error(f"Bybit WebSocket error: {e}. Reconnecting in 5s...")
+            await asyncio.sleep(5)
 
 async def fetch_derive_instruments(client):
     url = "https://api.lyra.finance/public/get_instruments"
@@ -108,33 +115,17 @@ async def save_to_db(records):
         await db.commit()
     logger.info(f"Saved {len(records)} records to DB.")
 
-async def collect_bybit(client):
-    logger.info("Fetching Bybit tickers...")
-    tickers = await fetch_bybit_tickers(client)
-    if not tickers:
-        logger.warning("No Bybit tickers found.")
-        return []
-    
+async def collect_bybit():
     now = datetime.now(timezone.utc)
-    logger.info(f"Processing {len(tickers)} Bybit tickers...")
+    records = []
     
-    semaphore = asyncio.Semaphore(10)
-    
-    async def process_ticker(t):
-        symbol = t.get('symbol', '')
+    for symbol, item in bybit_cache.items():
         parts = symbol.split('-')
         if len(parts) != 4:
-            return None
+            continue
         
         strike = float(parts[2])
         option_type = parts[3]
-        
-        async with semaphore:
-            ob = await fetch_bybit_orderbook(client, symbol, 5)
-            await asyncio.sleep(0.05) # Rate limiting
-            
-        bids = ob.get('b', []) if ob else []
-        asks = ob.get('a', []) if ob else []
         
         def pf(val):
             try: return float(val)
@@ -150,30 +141,32 @@ async def collect_bybit(client):
             'timestamp': now,
             'exchange': 'BYBIT',
             'symbol': symbol,
-            'underlying_price': pf(t.get('underlyingPrice')),
+            'underlying_price': pf(item.get('underlyingPrice')),
             'strike': strike,
             'expiry': expiry_date,
             'option_type': option_type,
-            'mark_price': pf(t.get('markPrice')),
-            'iv': pf(t.get('markIv')),
-            'delta': pf(t.get('delta')),
-            'gamma': pf(t.get('gamma')),
-            'vega': pf(t.get('vega')),
-            'theta': pf(t.get('theta')),
-            'volume': pf(t.get('volume24h')),
-            'open_interest': pf(t.get('openInterest')),
-            'bid_1': pf(t.get('bid1Price')),
-            'ask_1': pf(t.get('ask1Price')),
-            'bid_1_vol': pf(t.get('bid1Size')),
-            'ask_1_vol': pf(t.get('ask1Size')),
-            'orderbook_bids': bids,
-            'orderbook_asks': asks
+            'mark_price': pf(item.get('markPrice')),
+            'iv': pf(item.get('markIv')),
+            'delta': pf(item.get('delta')),
+            'gamma': pf(item.get('gamma')),
+            'vega': pf(item.get('vega')),
+            'theta': pf(item.get('theta')),
+            'volume': pf(item.get('volume24h')),
+            'open_interest': pf(item.get('openInterest')),
+            'bid_1': pf(item.get('bid1Price')),
+            'ask_1': pf(item.get('ask1Price')),
+            'bid_1_vol': pf(item.get('bid1Size')),
+            'ask_1_vol': pf(item.get('ask1Size')),
+            'orderbook_bids': [], # Top of book only
+            'orderbook_asks': []
         }
-        return record
-
-    tasks = [process_ticker(t) for t in tickers] # process all tickers
-    results = await asyncio.gather(*tasks)
-    return [r for r in results if r]
+        
+        # Only add valid quotes
+        if record['bid_1'] is not None or record['ask_1'] is not None:
+            records.append(record)
+            
+    logger.info(f"Processed {len(records)} Bybit records from websocket cache.")
+    return records
 
 async def collect_derive(client):
     logger.info("Fetching Derive instruments...")
@@ -312,12 +305,16 @@ async def collect_aevo(client):
 async def main():
     await init_db()
     logger.info("Database initialized")
+    
+    # Start Bybit websocket listener in background
+    asyncio.create_task(bybit_websocket_listener())
 
     async with AsyncSession(impersonate="chrome110", verify=False) as client:
         while True:
             logger.info("Starting collection cycle...")
             try:
-                bybit_records = await collect_bybit(client)
+                # We do not pass client to collect_bybit anymore
+                bybit_records = await collect_bybit()
                 derive_records = await collect_derive(client)
                 aevo_records = await collect_aevo(client)
                 

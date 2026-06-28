@@ -69,3 +69,34 @@ approach, not smaller, since you're explicitly selling the thing the market is p
 - Ad-hoc scripts used: `/root/opt21/edge_peek.py` (VRP + flow-correlation peek),
   `/root/opt21/skew_econ.py` (BS pricing comparison above) — both committed alongside this doc for
   reproducibility, not meant as production code.
+
+## Friction sanity-check (real live bid/ask, 2026-06-28) — answers "does anything survive spread+fees?"
+
+Pulled real top-of-book quotes from `options_data` (not theoretical BS-mid) for ETH 90%-moneyness
+puts on Bybit, spot ~$1569:
+
+| Expiry | bid | ask | mid | spread | spread % of mid | depth (bid/ask size) |
+|---|---|---|---|---|---|---|
+| 5d (2026-07-03), K=1400 | $6.80 | $6.90 | $6.85 | $0.10 | 1.5% | 478 / 578 contracts |
+| 12d (2026-07-10), K=1400 | $18.60 | $18.80 | $18.70 | $0.20 | 1.1% | 40 / 592 contracts |
+
+At Grogu1's position size (0.4 ETH/leg): credit $2.74, round-trip spread $0.04, exchange fees
+(~0.03% notional/side per project convention) ~$0.34 → **friction ≈ $0.38 (~14% of premium)**,
+net ≈ $2.36 remaining. On this single live snapshot, friction does NOT wipe out the skew-driven
+premium — most of it (the skew uplift was ~$2.43 on this position size) survives.
+
+**Caveats — do not over-trust this:**
+1. One moment in time, one strike. Spread% varies a lot across strikes/expiries in the same
+   snapshot (saw 10-50% spread on some near-ATM short-DTE contracts in the same pull).
+2. **Direct precedent for the opposite outcome exists**: `finding_eth_ironfly_spread_rejected` —
+   iron butterfly (4-leg wing-selling) looked fine on BS-mid, lost to real spread on the historical
+   data. Same underlying mechanism (selling OTM premium), different structure. A clean snapshot
+   today is not proof this survives over time.
+3. Friction surviving says nothing about tail risk — the real risk in this trade isn't spread, it's
+   the crash scenario where the short put blows up. This check only addresses "is there anything to
+   lose to friction," not "is this worth the risk."
+
+**Conclusion: keep collecting.** `options_data` already logs real bid_1/ask_1 every cycle — once we
+have weeks of this, recompute round-trip P&L (entry at bid, decay/expiry, real fee model) across many
+days/strikes instead of trusting a single snapshot. Revisit alongside the Phase 2 window (~mid/late
+July 2026).
